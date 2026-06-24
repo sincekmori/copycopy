@@ -4,19 +4,18 @@
 //! `CFRunLoop` and decode the virtual key code ourselves.
 
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Instant;
 
 use core_foundation::base::TCFType;
-use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
+use core_foundation::mach_port::CFMachPortRef;
 use core_foundation::runloop::CFRunLoop;
 use core_foundation::string::CFStringRef;
 use core_graphics::event::{
     CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType,
+    CGEventType, CallbackResult,
 };
 
 use crate::capture::{capture_macos, clipboard_change_count};
@@ -74,8 +73,12 @@ pub fn install(config: Config, handler: CaptureHandler) -> Result<(), Error> {
     let last_trigger: RefCell<Option<Instant>> = RefCell::new(None);
     let in_flight = Arc::new(AtomicBool::new(false));
     let base = Instant::now();
-    let port_holder: Rc<RefCell<Option<CFMachPort>>> = Rc::new(RefCell::new(None));
-    let port_cb = port_holder.clone();
+    // Holds the tap's mach port (as a raw pointer value) so the callback can
+    // re-enable the tap if macOS disables it. `OnceLock<usize>` is `Send` — the
+    // 0.25 `CGEventTap::new` callback bound requires `Send`, so we can't capture
+    // an `Rc`/`CFMachPort` here.
+    let port: Arc<OnceLock<usize>> = Arc::new(OnceLock::new());
+    let port_cb = port.clone();
 
     let tap = CGEventTap::new(
         CGEventTapLocation::HID,
@@ -87,18 +90,18 @@ pub fn install(config: Config, handler: CaptureHandler) -> Result<(), Error> {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 match event_type {
                     CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
-                        if let Some(port) = port_cb.borrow().as_ref() {
-                            unsafe { CGEventTapEnable(port.as_concrete_TypeRef(), true) };
+                        if let Some(&p) = port_cb.get() {
+                            unsafe { CGEventTapEnable(p as CFMachPortRef, true) };
                         }
-                        return None;
+                        return CallbackResult::Keep;
                     }
                     CGEventType::KeyDown | CGEventType::KeyUp => {}
-                    _ => return None,
+                    _ => return CallbackResult::Keep,
                 }
 
                 let keycode = event.get_integer_value_field(FIELD_KEYBOARD_KEYCODE);
                 if keycode != KEY_C {
-                    return None;
+                    return CallbackResult::Keep;
                 }
                 let is_down = matches!(event_type, CGEventType::KeyDown);
                 let cmd = event.get_flags().contains(CGEventFlags::CGEventFlagCommand);
@@ -118,9 +121,9 @@ pub fn install(config: Config, handler: CaptureHandler) -> Result<(), Error> {
                     detector.borrow_mut().on_c_up();
                 }
 
-                None
+                CallbackResult::Keep
             }))
-            .unwrap_or(None)
+            .unwrap_or(CallbackResult::Keep)
         },
     );
 
@@ -132,9 +135,12 @@ pub fn install(config: Config, handler: CaptureHandler) -> Result<(), Error> {
         )
     })?;
 
-    *port_holder.borrow_mut() = Some(tap.mach_port.clone());
+    // Remember the port (as a raw pointer value) so the callback can re-enable
+    // the tap after a timeout. Valid for the program's life because we
+    // `mem::forget(tap)` below, leaking the port.
+    let _ = port.set(tap.mach_port().as_concrete_TypeRef() as usize);
 
-    let source = tap.mach_port.create_runloop_source(0).map_err(|_| {
+    let source = tap.mach_port().create_runloop_source(0).map_err(|_| {
         Error::ListenerInit("could not create run loop source for the tap".to_string())
     })?;
 
