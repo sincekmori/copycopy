@@ -1,0 +1,5 @@
+[workspace]
+# CI already builds and tests on Windows + macOS, so skip the publish-time
+# verification build. (It would otherwise run on the Linux release runner, where
+# rdev needs X11 system libraries even though Linux is an unsupported target.)
+publish_no_verify = true

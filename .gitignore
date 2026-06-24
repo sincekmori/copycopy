@@ -1,0 +1,12 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# Library crate: the lockfile is intentionally not committed
+Cargo.lock
+
+# Editor / OS
+.idea/
+.DS_Store
+*.swp

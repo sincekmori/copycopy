@@ -1,0 +1,37 @@
+[package]
+name = "copycopy"
+version = "0.1.0"
+edition = "2021"
+description = "Global Ctrl/Cmd+C+C trigger: capture clipboard content + foreground app info and hand it to your code."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/sincekmori/copycopy"
+keywords = ["clipboard", "hotkey", "capture", "macos", "windows"]
+categories = ["os", "api-bindings"]
+
+# docs.rs builds on Linux by default, where this crate is unsupported (rdev is
+# X11-only). Build the docs for the supported targets instead.
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# Active window info (app name, title, and chromium browser URL on Windows/macOS).
+x-win = "5.7.0"
+# Multi-format clipboard reads (text, HTML, RTF, image, files).
+clipboard-rs = "0.3.4"
+
+# Windows/Linux: passive global key listening via rdev (listen, not grab).
+# NOT used on macOS (rdev's callback hits main-thread-only Carbon APIs).
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rdev = "0.5.3"
+
+# macOS: install our own ListenOnly CGEventTap on the main run loop. Main-thread
+# hops use raw libdispatch (no extra crate); see src/capture.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+
+[[example]]
+name = "print_events"
