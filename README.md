@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/copycopy.svg)](https://crates.io/crates/copycopy)
 [![Docs.rs](https://docs.rs/copycopy/badge.svg)](https://docs.rs/copycopy)
 [![CI](https://github.com/sincekmori/copycopy/actions/workflows/ci.yml/badge.svg)](https://github.com/sincekmori/copycopy/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-APACHE)
+[![License](https://img.shields.io/crates/l/copycopy.svg)](https://crates.io/crates/copycopy)
 
 A small cross-platform (Windows + macOS) Rust library that turns a global **Ctrl/Cmd + C + C** gesture into a structured capture and hands it to your code.
 
@@ -35,10 +35,10 @@ The hard parts are the same for every such app, and they are fully encapsulated 
 
 ```toml
 [dependencies]
-copycopy = { path = "..." } # or a version once published
+copycopy = "0.1"
 ```
 
-```rust
+```rust,no_run
 use copycopy::{block_forever, start, Captured, Config};
 
 fn main() {
@@ -60,7 +60,7 @@ fn main() {
 
 ## The captured event
 
-```rust
+```rust,ignore
 pub struct CaptureEvent {
     pub timestamp_ms: u64,
     pub app_name: String,
@@ -90,7 +90,7 @@ Two common patterns:
 
 - **In a GUI host (e.g. Tauri)** — call `start` from your main-thread startup hook and forward the event to the webview, then build the settings (API keys) and the result/action UI in the frontend:
 
-  ```rust
+  ```rust,ignore
   // Tauri's setup() runs on the main thread, satisfying the macOS requirement.
   let app = app_handle.clone();
   copycopy::start(Config::default(), move |event| {
@@ -120,7 +120,7 @@ Missing permissions fail silently — no events, or an empty title/URL.
 
 `Config` exposes public fields and a `Default`, so override only what you need with struct-update syntax.
 
-```rust
+```rust,no_run
 use std::time::Duration;
 use copycopy::Config;
 

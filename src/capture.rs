@@ -292,6 +292,14 @@ fn build_event(fg: Foreground, content: Captured) -> CaptureEvent {
     }
 }
 
+/// Number of poll iterations that cover `clipboard_change_timeout`, stepping by
+/// `clipboard_poll_step`. Always >= 1 (so the clipboard is read at least once)
+/// and divide-by-zero-safe when the step is zero.
+fn poll_step_count(config: &Config) -> u128 {
+    (config.clipboard_change_timeout.as_millis() / config.clipboard_poll_step.as_millis().max(1))
+        .max(1)
+}
+
 // ----------------------------- Windows / Linux -----------------------------
 
 /// Runs on a worker thread. Reads the window, waits for the clipboard to change
@@ -309,7 +317,7 @@ pub(crate) fn run_capture(config: &Config, handler: &CaptureHandler, baseline: u
 #[cfg(not(target_os = "macos"))]
 fn wait_for_change_then_read(config: &Config, baseline: u64) -> Captured {
     let step = config.clipboard_poll_step;
-    let steps = (config.clipboard_change_timeout.as_millis() / step.as_millis().max(1)).max(1);
+    let steps = poll_step_count(config);
     for _ in 0..steps {
         thread::sleep(step);
         if clipboard_change_count() != baseline {
@@ -385,7 +393,7 @@ pub(crate) fn capture_macos(config: Config, handler: CaptureHandler, baseline: u
     }
 
     let step = config.clipboard_poll_step;
-    let steps = (config.clipboard_change_timeout.as_millis() / step.as_millis().max(1)).max(1);
+    let steps = poll_step_count(&config);
     let max_files = config.max_files;
     let mut content: Option<Captured> = None;
     for _ in 0..steps {
@@ -471,6 +479,20 @@ mod tests {
         assert!(!rtf_is_meaningfully_rich(
             r"{\rtf1\ansi \f0\fs24 \cf0 plain}"
         ));
+    }
+
+    #[test]
+    fn poll_step_count_covers_timeout_and_clamps() {
+        use std::time::Duration;
+        let cfg = |timeout_ms, step_ms| Config {
+            clipboard_change_timeout: Duration::from_millis(timeout_ms),
+            clipboard_poll_step: Duration::from_millis(step_ms),
+            ..Default::default()
+        };
+        assert_eq!(poll_step_count(&cfg(400, 20)), 20); // covers the window
+        assert_eq!(poll_step_count(&cfg(10, 20)), 1); // timeout < step => read once
+        assert_eq!(poll_step_count(&cfg(0, 20)), 1); // zero timeout => read once
+        assert_eq!(poll_step_count(&cfg(400, 0)), 400); // zero step => no divide-by-zero
     }
 
     #[test]

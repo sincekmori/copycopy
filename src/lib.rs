@@ -1,40 +1,4 @@
-//! Global **Ctrl/Cmd + C + C** trigger that captures the clipboard plus the
-//! foreground application, and hands the result to your code.
-//!
-//! Hold the platform modifier (Windows = Ctrl, macOS = Cmd) and press `C` twice
-//! quickly. A normal single copy is never consumed. On each trigger your handler
-//! receives a [`CaptureEvent`] (clipboard content + app name / window title /
-//! browser URL / PID) on a worker thread. What you do with it — translate, run an
-//! LLM, show an action picker, store it — is up to you.
-//!
-//! # Quickstart (standalone)
-//!
-//! ```no_run
-//! use copycopy::{block_forever, start, Captured, Config};
-//!
-//! let _capture = start(Config::default(), |event| {
-//!     match event.content {
-//!         Captured::Text { text } => println!("copied text: {text}"),
-//!         other => println!("copied: {other:?}"),
-//!     }
-//! })
-//! .expect("failed to start capture");
-//!
-//! block_forever(); // keep the process (and the listener) alive
-//! ```
-//!
-//! # macOS requirements
-//!
-//! Call [`start`] from the thread that runs your app's main run loop (a bare
-//! binary should call [`block_forever`] right after; a GUI host like Tauri should
-//! call `start` from its main-thread startup hook). Grant **Input Monitoring**
-//! (keys), **Screen Recording** (window titles), and **Automation** (browser URL).
-//!
-//! # Platform support
-//!
-//! Windows and macOS. **Linux is not supported**: the Windows/Linux path uses
-//! rdev, which is X11-only, and Wayland blocks global key capture by design.
-
+#![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
 mod capture;
