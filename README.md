@@ -5,9 +5,9 @@
 [![CI](https://github.com/sincekmori/copycopy/actions/workflows/ci.yml/badge.svg)](https://github.com/sincekmori/copycopy/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/copycopy.svg)](https://crates.io/crates/copycopy)
 
-A small cross-platform (Windows + macOS) Rust library that turns a global **Ctrl/Cmd + C + C** gesture into a structured capture and hands it to your code.
+A small cross-platform (Windows + macOS + Linux GNOME Wayland) Rust library that turns a global **Ctrl/Cmd + C + C** gesture into a structured capture and hands it to your code.
 
-Hold the platform modifier (Windows = **Ctrl**, macOS = **Cmd**) and press `C` **twice quickly**.
+Hold the platform modifier (Windows/Linux = **Ctrl**, macOS = **Cmd**) and press `C` **twice quickly**.
 A normal single copy is never consumed.
 On each trigger your handler receives a `CaptureEvent` — the clipboard content plus the foreground app (name, window title, browser URL, PID) — on a worker thread.
 
@@ -28,6 +28,7 @@ The hard parts are the same for every such app, and they are fully encapsulated 
 - **Passive listening** — listen-only key hooks, so a plain single copy still works (no global hotkey registration that would swallow the keystroke).
 - **An OS-independent double-tap state machine** — auto-repeat aware, and unit-tested.
 - **The macOS minefield** — rdev crashes off the main thread, so we run our own `CGEventTap` on the main run loop and decode key codes directly, hop main-thread-only clipboard and window reads to the main thread via libdispatch, and keep the slow browser-URL lookup off it.
+- **The GNOME Wayland wall** — Wayland lets no background process observe keys or the clipboard, so on GNOME the crate ships (and auto-installs, no sudo) a tiny GNOME Shell extension that detects the gesture inside the compositor and hands captures over via unicast D-Bus. See [Linux (GNOME Wayland)](#linux-gnome-wayland).
 - **Reliable clipboard reads** — gated on the OS clipboard change counter, so we read the fresh copy rather than a stale one.
 - **Multi-format reads** — text, image (PNG bytes), rich text (HTML/RTF, only when it carries real formatting), and files (normalized paths).
 
@@ -140,13 +141,35 @@ let config = Config {
 | `denylist_exec_substrings` | `[]` | skip capture for these apps (e.g. password managers) |
 | `max_files` | 50 | cap on file paths captured |
 
+On the GNOME Wayland backend the timing fields are fixed inside the Shell extension (same defaults); only `denylist_exec_substrings` (matched against the app name / `wm_class`) and `max_files` apply.
+
 ## Platform support
 
 | OS | Status |
 |----|--------|
 | Windows | ✅ supported |
 | macOS | ✅ supported |
-| Linux | ❌ not supported — rdev is X11-only, and Wayland blocks global key capture by design (a future evdev-based path would be a separate implementation) |
+| Linux — GNOME on Wayland | ✅ supported via an auto-installed GNOME Shell extension (see below) |
+| Linux — X11 | ⚠️ best-effort — the rdev key-listener path compiles and runs, but is not regularly tested |
+| Linux — other Wayland (KDE, wlroots, ...) | ❌ not supported yet — no unprivileged capture path; a future `data-control`-based backend may cover it |
+
+## Linux (GNOME Wayland)
+
+GNOME's Wayland compositor deliberately prevents background processes from observing keystrokes or reading the clipboard, so a userspace listener like rdev cannot work.
+Instead, the crate embeds a small GNOME Shell extension and installs it automatically on first `start` — into `~/.local/share/gnome-shell/extensions/` (no sudo, nothing system-wide).
+
+How it works:
+
+- The extension runs inside the compositor (the same vantage point clipboard managers like GPaste use). It watches clipboard **owner changes**, so the trigger is **two explicit copies within 400 ms** — which is exactly what Ctrl+C+C produces. A single copy never fires anything.
+- After the second copy it waits for the clipboard to settle, reads the content with the same priority as the other platforms (files > image > rich text > plain text), attaches the focused window's app name / `wm_class` / title / PID, and notifies the host app.
+- **Privacy**: clipboard contents are never broadcast on the D-Bus session bus. The extension only broadcasts a serial number; the content itself is fetched with a unicast method call, is handed out once, and expires after a few seconds.
+
+Things to know:
+
+- **First run requires one logout/login.** GNOME Shell only loads newly installed extensions at login (Wayland has no shell restart). The listener prints a clear message on stderr when the extension is installed but not yet loaded. Subsequent runs need nothing.
+- **Supported GNOME versions: 45–50 declared, verified on GNOME 46.** GNOME's `shell-version` metadata has no range syntax — each major must be listed explicitly, or the extension is disabled at login on that version. GNOME releases a new major every March and September; each release gets the new major appended and a patch release of this crate, and the auto-installer upgrades existing installs by version comparison, so staying current only takes a `cargo update`. (GNOME 44 and older are out: they use a different, pre-ESM extension entry point.)
+- **Screenshots don't trigger.** GNOME's PrtSc writes the clipboard once, and one clipboard write is a single copy by definition. The macOS-style "screenshot, then Ctrl+C+C to grab it" flow is out of scope on this backend — copy an image from an app (two Ctrl+C presses) instead.
+- `CaptureEvent.exec_path` is empty and `url` is `None` on this backend; `exec_name` carries the window's `wm_class`.
 
 ## Limitations
 
