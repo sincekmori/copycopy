@@ -19,15 +19,16 @@ use crate::event::{CaptureEvent, Captured, RichFormat};
 use crate::CaptureHandler;
 
 /// Foreground application context captured alongside the clipboard. Defaults to
-/// all-empty, which is used when the active window cannot be read.
+/// all-empty, which is used when the active window cannot be read. Fields are
+/// crate-visible so alternative backends (GNOME Wayland) can build one.
 #[derive(Default)]
 pub(crate) struct Foreground {
-    app_name: String,
-    exec_name: String,
-    exec_path: String,
-    window_title: String,
-    process_id: u32,
-    url: Option<String>,
+    pub(crate) app_name: String,
+    pub(crate) exec_name: String,
+    pub(crate) exec_path: String,
+    pub(crate) window_title: String,
+    pub(crate) process_id: u32,
+    pub(crate) url: Option<String>,
 }
 
 fn now_millis() -> u64 {
@@ -115,7 +116,7 @@ pub(crate) fn read_active_window() -> Foreground {
 
 /// Whether to skip capturing this foreground app: it's us, or it matches the
 /// privacy denylist (substring of the executable name or full path).
-fn should_skip(fg: &Foreground, denylist: &[String]) -> bool {
+pub(crate) fn should_skip(fg: &Foreground, denylist: &[String]) -> bool {
     if fg.process_id == std::process::id() {
         return true;
     }
@@ -188,7 +189,7 @@ fn read_clipboard(max_files: usize) -> Captured {
 
 /// HTML is rich only with an actual formatting/structure tag (not just a styled
 /// wrapper span browsers add to plain selections).
-fn html_is_meaningfully_rich(html: &str) -> bool {
+pub(crate) fn html_is_meaningfully_rich(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
     const RICH: &[&str] = &[
         "<b>",
@@ -246,8 +247,8 @@ fn rtf_is_meaningfully_rich(rtf: &str) -> bool {
     RICH.iter().any(|cw| rtf.contains(cw))
 }
 
-/// Strip a `file://` prefix (macOS may hand back URLs) and percent-decode.
-fn normalize_file_path(raw: &str) -> String {
+/// Strip a `file://` prefix (macOS and GNOME hand back URLs) and percent-decode.
+pub(crate) fn normalize_file_path(raw: &str) -> String {
     let s = raw.strip_prefix("file://").unwrap_or(raw);
     percent_decode(s)
 }
@@ -279,7 +280,7 @@ fn hex(b: u8) -> Option<u8> {
     }
 }
 
-fn build_event(fg: Foreground, content: Captured) -> CaptureEvent {
+pub(crate) fn build_event(fg: Foreground, content: Captured) -> CaptureEvent {
     CaptureEvent {
         timestamp_ms: now_millis(),
         app_name: fg.app_name,

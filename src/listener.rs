@@ -1,6 +1,13 @@
-//! Global, *passive* keyboard listener (rdev `listen`, never `grab`).
-//! Windows/Linux only. Feeds key events to [`crate::detector`] and, on a trigger,
+//! Windows/Linux listener entry point.
+//!
+//! Default path: a global, *passive* keyboard listener (rdev `listen`, never
+//! `grab`) that feeds key events to [`crate::detector`] and, on a trigger,
 //! runs the capture (which calls the handler). macOS uses `listener_macos`.
+//!
+//! On Linux the session is inspected first: GNOME Wayland is routed to the
+//! Shell-extension backend in [`crate::gnome`] (rdev cannot see keys under
+//! Wayland), other Wayland compositors are reported as unsupported, and X11
+//! falls through to the rdev path.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,8 +26,31 @@ fn is_trigger_modifier(key: Key) -> bool {
     matches!(key, Key::ControlLeft | Key::ControlRight)
 }
 
-/// Blocking. Run this on a dedicated thread.
+/// Blocking. Run this on a dedicated thread. Picks the backend for the session.
 pub fn start_listener(config: Config, handler: CaptureHandler) {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::gnome::installer::{detect_session, Session};
+        match detect_session() {
+            Session::GnomeWayland => {
+                return crate::gnome::listener::start_listener(config, handler);
+            }
+            Session::OtherWayland => {
+                eprintln!(
+                    "[copycopy] this Wayland session is not GNOME; only GNOME Wayland and \
+                     X11 are supported on Linux (KDE/wlroots support may come later)."
+                );
+                return;
+            }
+            Session::X11 => {} // fall through to the rdev key listener
+        }
+    }
+
+    start_rdev_listener(config, handler)
+}
+
+/// Blocking rdev key listener (Windows, and Linux on X11).
+fn start_rdev_listener(config: Config, handler: CaptureHandler) {
     let mut detector = DoubleTap::new(config.double_tap_window.as_millis() as u64);
     let mut last_trigger: Option<Instant> = None;
     let in_flight = Arc::new(AtomicBool::new(false));
