@@ -4,13 +4,23 @@ Thanks for your interest in contributing to `copycopy`!
 
 ## Supported platforms
 
-Windows and macOS.
-Linux is not supported (see the README for why), so please develop and test on Windows or macOS.
+Windows, macOS, and Linux (GNOME Wayland; X11 is best-effort).
+See the README's platform support table for details.
 
 ## Prerequisites
 
 - A recent stable Rust toolchain.
 - macOS: Xcode Command Line Tools, plus the permissions described in the README (Input Monitoring / Screen Recording / Automation) to run the example.
+- Linux: the X11 development headers rdev needs at build time — on Debian/Ubuntu: `sudo apt-get install libx11-dev libxtst-dev libxi-dev`.
+
+## Developing the GNOME Shell extension
+
+The GNOME Wayland backend lives in `src/gnome/`; `extension.js` is embedded into the crate and auto-installed at runtime.
+A running GNOME Shell only loads newly installed extensions at login, so iterating by logging out every time is painful.
+Use a nested shell instead: `dbus-run-session -- gnome-shell --nested --wayland` starts an isolated session that loads the currently installed extension.
+Run the example against the nested session bus, and copy inside the nested session to exercise it (e.g. `WAYLAND_DISPLAY=wayland-1 wl-copy "test"` twice within 400 ms).
+Whenever `extension.js` changes, bump `version` in `src/gnome/metadata.json` so the installer upgrades existing installs.
+When a new GNOME major is released (every March and September), append it to `shell-version` in `metadata.json` — there is no range syntax, and unlisted majors disable the extension at login.
 
 ## Before opening a PR
 
