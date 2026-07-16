@@ -145,40 +145,101 @@ fn install_into(dir: &Path) -> Result<InstallState, String> {
     Ok(InstallState::Written)
 }
 
-/// Add the UUID to the `enabled-extensions` gsettings key. `gnome-extensions
-/// enable` cannot be used here: it validates against the *running* shell,
-/// which does not know a freshly installed extension until the next login.
-/// Writing the key directly works in both cases and is what GNOME reads at
-/// login.
+/// Enable the extension, preferring the running shell over raw gsettings.
+///
+/// Path 1: `org.gnome.Shell.Extensions.EnableExtension` over the session bus
+/// (the same call `gnome-extensions enable` makes). When the shell already
+/// knows the extension — installed at a previous login but sitting dormant —
+/// this clears any stale `disabled-extensions` entry and activates it
+/// immediately, no logout required. It cannot enable a freshly written
+/// extension: gnome-shell only scans for new ones at login.
+///
+/// Path 2 (fresh install): write the gsettings keys directly — that is what
+/// GNOME reads at the next login. Adding to `enabled-extensions` alone is
+/// not enough: `disabled-extensions` outranks it (GNOME 45+), so a stale
+/// entry there keeps the extension loaded-but-INITIALIZED through every
+/// future login, with nothing in the UI to explain why. Remove it too.
 fn enable_extension() -> Result<(), String> {
+    if enable_via_shell() {
+        return Ok(());
+    }
+    update_extension_list("enabled-extensions", |uuids| {
+        append_uuid(uuids, EXTENSION_UUID)
+    })?;
+    update_extension_list("disabled-extensions", |uuids| {
+        remove_uuid(uuids, EXTENSION_UUID)
+    })
+}
+
+/// Ask the running gnome-shell to enable the extension. `false` covers every
+/// failure — no session bus, no shell on it, extension not scanned yet — and
+/// sends the caller down the gsettings path.
+fn enable_via_shell() -> bool {
+    let Ok(connection) = zbus::blocking::Connection::session() else {
+        return false;
+    };
+    let Ok(proxy) = zbus::blocking::Proxy::new(
+        &connection,
+        "org.gnome.Shell.Extensions",
+        "/org/gnome/Shell/Extensions",
+        "org.gnome.Shell.Extensions",
+    ) else {
+        return false;
+    };
+    proxy
+        .call::<_, _, bool>("EnableExtension", &(EXTENSION_UUID,))
+        .unwrap_or(false)
+}
+
+/// The list with `uuid` appended, or `None` when it is already present.
+fn append_uuid(mut uuids: Vec<String>, uuid: &str) -> Option<Vec<String>> {
+    if uuids.iter().any(|u| u == uuid) {
+        return None;
+    }
+    uuids.push(uuid.to_string());
+    Some(uuids)
+}
+
+/// The list with `uuid` removed, or `None` when it was absent.
+fn remove_uuid(uuids: Vec<String>, uuid: &str) -> Option<Vec<String>> {
+    if !uuids.iter().any(|u| u == uuid) {
+        return None;
+    }
+    Some(uuids.into_iter().filter(|u| u != uuid).collect())
+}
+
+/// Read-modify-write one `org.gnome.shell` string-array key via the
+/// `gsettings` CLI. `update` returns `None` when the list is already in the
+/// desired state, which skips the write.
+fn update_extension_list(
+    key: &str,
+    update: impl FnOnce(Vec<String>) -> Option<Vec<String>>,
+) -> Result<(), String> {
     const SCHEMA: &str = "org.gnome.shell";
-    const KEY: &str = "enabled-extensions";
 
     let out = Command::new("gsettings")
-        .args(["get", SCHEMA, KEY])
+        .args(["get", SCHEMA, key])
         .output()
         .map_err(|e| format!("cannot run gsettings: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "`gsettings get {SCHEMA} {KEY}` failed: {}",
+            "`gsettings get {SCHEMA} {key}` failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
 
     let current = String::from_utf8_lossy(&out.stdout);
-    let mut uuids = parse_gvariant_string_array(&current);
-    if uuids.iter().any(|u| u == EXTENSION_UUID) {
+    let Some(next) = update(parse_gvariant_string_array(&current)) else {
         return Ok(());
-    }
-    uuids.push(EXTENSION_UUID.to_string());
+    };
 
     let out = Command::new("gsettings")
-        .args(["set", SCHEMA, KEY, &format_gvariant_string_array(&uuids)])
+        .args(["set", SCHEMA, key, &format_gvariant_string_array(&next)])
         .output()
         .map_err(|e| format!("cannot run gsettings: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "`gsettings set {SCHEMA} {KEY}` failed: {}",
+            "`gsettings set {SCHEMA} {key}` failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
@@ -211,9 +272,10 @@ mod tests {
     use super::*;
 
     /// Self-cleaning scratch directory under the system temp dir. Tests must
-    /// never touch the real `$HOME` / gsettings — only `install_into` (which
-    /// takes an explicit directory) is exercised here; `ensure_installed` and
-    /// `enable_extension` are runtime-only.
+    /// never touch the real `$HOME` / gsettings / session bus — only pure
+    /// helpers and `install_into` (which takes an explicit directory) are
+    /// exercised here; `ensure_installed`, `enable_extension`,
+    /// `enable_via_shell`, and `update_extension_list` are runtime-only.
     struct TempDir(PathBuf);
 
     impl TempDir {
@@ -390,6 +452,29 @@ mod tests {
             "['a', 'b']"
         );
         assert_eq!(format_gvariant_string_array(&[]), "[]");
+    }
+
+    #[test]
+    fn append_uuid_adds_once() {
+        assert_eq!(append_uuid(vec![], "a@b"), Some(vec!["a@b".to_string()]));
+        assert_eq!(
+            append_uuid(vec!["x@y".to_string()], "a@b"),
+            Some(vec!["x@y".to_string(), "a@b".to_string()])
+        );
+        assert_eq!(append_uuid(vec!["a@b".to_string()], "a@b"), None);
+    }
+
+    #[test]
+    fn remove_uuid_removes_every_occurrence() {
+        assert_eq!(remove_uuid(vec![], "a@b"), None);
+        assert_eq!(remove_uuid(vec!["x@y".to_string()], "a@b"), None);
+        assert_eq!(
+            remove_uuid(
+                vec!["a@b".to_string(), "x@y".to_string(), "a@b".to_string()],
+                "a@b"
+            ),
+            Some(vec!["x@y".to_string()])
+        );
     }
 
     #[test]
