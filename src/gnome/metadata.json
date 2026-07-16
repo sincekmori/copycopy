@@ -1,0 +1,8 @@
+{
+  "uuid": "copycopy@sincekmori.github.io",
+  "name": "copycopy",
+  "description": "Clipboard double-copy (Ctrl+C+C) capture backend for the copycopy Rust crate. Installed and enabled automatically by applications built on copycopy; it does nothing on its own.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/sincekmori/copycopy",
+  "version": 3
+}

@@ -5,6 +5,8 @@ mod capture;
 mod config;
 mod detector;
 mod event;
+#[cfg(target_os = "linux")]
+mod gnome;
 #[cfg(not(target_os = "macos"))]
 mod listener;
 #[cfg(target_os = "macos")]

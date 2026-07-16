@@ -10,6 +10,13 @@ ignore = [
     # image -> ravif -> rav1e (AVIF support); there is no vulnerability and no
     # upgrade path from here. Revisit if `image` drops it.
     "RUSTSEC-2024-0436",
+    # quick-xml < 0.41 can over-allocate on malicious XML. It is only a *build*
+    # dependency of xcb (via x-win), where it parses the XCB protocol
+    # definitions bundled with the crate itself — trusted input, never
+    # attacker-controlled, and nothing of it ships in the binary. No upgrade
+    # path until xcb moves off quick-xml 0.30. Revisit on xcb releases.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
 
 [licenses]

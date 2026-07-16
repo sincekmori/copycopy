@@ -24,9 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux is intentionally excluded: rdev is X11-only and the crate is
-        # unsupported on Linux (see README). The two supported targets are tested.
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -34,6 +32,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: install X11 headers (rdev build dependency)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxtst-dev libxi-dev
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test

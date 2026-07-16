@@ -9,11 +9,14 @@ repository = "https://github.com/sincekmori/copycopy"
 keywords = ["clipboard", "hotkey", "capture", "macos", "windows"]
 categories = ["os", "api-bindings"]
 
-# docs.rs builds on Linux by default, where this crate is unsupported (rdev is
-# X11-only). Build the docs for the supported targets instead.
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
-targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -22,10 +25,15 @@ x-win = "5.7.0"
 # Multi-format clipboard reads (text, HTML, RTF, image, files).
 clipboard-rs = "0.3.4"
 
-# Windows/Linux: passive global key listening via rdev (listen, not grab).
+# Windows / Linux-X11: passive global key listening via rdev (listen, not grab).
 # NOT used on macOS (rdev's callback hits main-thread-only Carbon APIs).
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 rdev = "0.5.3"
+
+# Linux GNOME Wayland: talk to our embedded GNOME Shell extension over the
+# session bus (see src/gnome/). Blocking API only; runs on the listener thread.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 # macOS: install our own ListenOnly CGEventTap on the main run loop. Main-thread
 # hops use raw libdispatch (no extra crate); see src/capture.rs.
