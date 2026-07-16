@@ -1,8 +1,8 @@
 //! Minimal usage: print every capture to stdout.
 //!
 //! Run with `cargo run --example print_events`, then copy something and press
-//! Ctrl+C+C (Windows) / Cmd+C+C (macOS). A plain single copy keeps working.
-//! Quit with Ctrl+C in this terminal.
+//! Ctrl+C+C (Windows/Linux) / Cmd+C+C (macOS). A plain single copy keeps
+//! working. Quit with Ctrl+C in this terminal.
 
 use copycopy::{block_forever, start, Captured, Config};
 
