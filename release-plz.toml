@@ -1,5 +1,10 @@
 [workspace]
-# CI already builds and tests on Windows + macOS, so skip the publish-time
-# verification build. (It would otherwise run on the Linux release runner, where
-# rdev needs X11 system libraries even though Linux is an unsupported target.)
+# CI already builds and tests on Windows + macOS + Linux, so skip the
+# publish-time verification build. (It would otherwise run on the Linux release
+# runner, which lacks the X11 system libraries rdev needs at build time.)
 publish_no_verify = true
+# During 0.x, bump the minor version for feat commits instead of the patch
+# default: cargo auto-updates within ^0.y, and new behavior (e.g. the GNOME
+# Wayland backend auto-installing a Shell extension) should be an explicit
+# opt-in for consumers, not something `cargo update` pulls in silently.
+features_always_increment_minor = true
