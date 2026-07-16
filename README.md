@@ -36,7 +36,7 @@ The hard parts are the same for every such app, and they are fully encapsulated 
 
 ```toml
 [dependencies]
-copycopy = "0.2"
+copycopy = "0.3"
 ```
 
 ```rust,no_run
