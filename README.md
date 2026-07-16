@@ -102,6 +102,30 @@ Two common patterns:
 
 - **In Rust** — run your processor directly in the handler and keep API keys native (e.g. an OS keychain); the handler runs on a worker thread, so blocking calls are fine.
 
+## Trigger status
+
+`start` has a sibling, `start_with_status`, that also reports how the trigger settled — the states a GUI host should surface to the user, because they are otherwise silent (the accompanying diagnostics go to stderr, which is invisible in a bundled app):
+
+```rust,no_run
+use copycopy::{start_with_status, Config, TriggerStatus};
+
+let _capture = start_with_status(
+    Config::default(),
+    |event| println!("{event:?}"),
+    |status| match status {
+        // GNOME Wayland: installed, active after one logout/login.
+        TriggerStatus::GnomeExtensionAwaitingLogin => { /* show "log out and back in once" */ }
+        // Non-GNOME Wayland: no capture path exists.
+        TriggerStatus::UnsupportedSession => { /* show "this desktop is not supported" */ }
+        _ => {}
+    },
+)
+.expect("failed to start capture");
+```
+
+Treat the latest report as current.
+`TriggerStatus` serializes with a `"kind"` tag (like `CaptureEvent`), so it forwards to a webview or over IPC in one line.
+
 ## macOS permissions
 
 `start` must be called on the thread that runs the app's main run loop.
@@ -166,7 +190,7 @@ How it works:
 
 Things to know:
 
-- **First run requires one logout/login.** GNOME Shell only loads newly installed extensions at login (Wayland has no shell restart). The listener prints a clear message on stderr when the extension is installed but not yet loaded. Subsequent runs need nothing.
+- **First run requires one logout/login.** GNOME Shell only loads newly installed extensions at login (Wayland has no shell restart). The listener prints a clear message on stderr when the extension is installed but not yet loaded, and reports it as `TriggerStatus::GnomeExtensionAwaitingLogin` via `start_with_status` (see [Trigger status](#trigger-status)) so a GUI host can tell the user. Subsequent runs need nothing.
 - **Supported GNOME versions: 45–50 declared, verified on GNOME 46.** GNOME's `shell-version` metadata has no range syntax — each major must be listed explicitly, or the extension is disabled at login on that version. GNOME releases a new major every March and September; each release gets the new major appended and a patch release of this crate, and the auto-installer upgrades existing installs by version comparison, so staying current only takes a `cargo update`. (GNOME 44 and older are out: they use a different, pre-ESM extension entry point.)
 - **Screenshots don't trigger.** GNOME's PrtSc writes the clipboard once, and one clipboard write is a single copy by definition. The macOS-style "screenshot, then Ctrl+C+C to grab it" flow is out of scope on this backend — copy an image from an app (two Ctrl+C presses) instead.
 - `CaptureEvent.exec_path` is empty and `url` is `None` on this backend; `exec_name` carries the window's `wm_class`.

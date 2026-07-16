@@ -19,7 +19,11 @@ const INTERFACE: &str = "io.github.sincekmori.copycopy";
 type TakeCaptureReply = (String, String, Vec<u8>, String, String, String, String, u32);
 
 /// Blocking. Run this on a dedicated thread.
-pub(crate) fn start_listener(config: Config, handler: CaptureHandler) {
+pub(crate) fn start_listener(
+    config: Config,
+    handler: CaptureHandler,
+    status: crate::StatusHandler,
+) {
     match installer::ensure_installed() {
         Ok(InstallState::Written) => {
             eprintln!(
@@ -30,16 +34,26 @@ pub(crate) fn start_listener(config: Config, handler: CaptureHandler) {
         Ok(InstallState::UpToDate) => {}
         Err(e) => {
             eprintln!("[copycopy] failed to install the GNOME Shell extension: {e}");
+            status(crate::TriggerStatus::Failed {
+                message: format!("failed to install the GNOME Shell extension: {e}"),
+            });
             return;
         }
     }
 
-    if let Err(e) = run(&config, &handler) {
+    if let Err(e) = run(&config, &handler, &status) {
         eprintln!("[copycopy] GNOME Wayland D-Bus listener failed: {e}");
+        status(crate::TriggerStatus::Failed {
+            message: format!("GNOME Wayland D-Bus listener failed: {e}"),
+        });
     }
 }
 
-fn run(config: &Config, handler: &CaptureHandler) -> zbus::Result<()> {
+fn run(
+    config: &Config,
+    handler: &CaptureHandler,
+    status: &crate::StatusHandler,
+) -> zbus::Result<()> {
     let connection = zbus::blocking::Connection::session()?;
     let proxy = zbus::blocking::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)?;
 
@@ -52,14 +66,20 @@ fn run(config: &Config, handler: &CaptureHandler) -> zbus::Result<()> {
                  v{} is installed); log out and back in to activate the new version.",
                 installer::embedded_version()
             );
+            // The old version keeps capturing, so this is "listening, but".
+            status(crate::TriggerStatus::GnomeExtensionOutdated {
+                loaded: u64::from(loaded),
+                embedded: installer::embedded_version(),
+            });
         }
-        Ok(_) => {}
+        Ok(_) => status(crate::TriggerStatus::Listening),
         Err(_) => {
             eprintln!(
                 "[copycopy] the GNOME Shell extension is installed and enabled but not \
                  loaded yet — GNOME Shell only loads new extensions at login. \
                  Log out and back in once, then restart this application."
             );
+            status(crate::TriggerStatus::GnomeExtensionAwaitingLogin);
         }
     }
 

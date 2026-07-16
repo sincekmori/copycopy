@@ -27,30 +27,31 @@ fn is_trigger_modifier(key: Key) -> bool {
 }
 
 /// Blocking. Run this on a dedicated thread. Picks the backend for the session.
-pub fn start_listener(config: Config, handler: CaptureHandler) {
+pub fn start_listener(config: Config, handler: CaptureHandler, status: crate::StatusHandler) {
     #[cfg(target_os = "linux")]
     {
         use crate::gnome::installer::{detect_session, Session};
         match detect_session() {
             Session::GnomeWayland => {
-                return crate::gnome::listener::start_listener(config, handler);
+                return crate::gnome::listener::start_listener(config, handler, status);
             }
             Session::OtherWayland => {
                 eprintln!(
                     "[copycopy] this Wayland session is not GNOME; only GNOME Wayland and \
                      X11 are supported on Linux (KDE/wlroots support may come later)."
                 );
+                status(crate::TriggerStatus::UnsupportedSession);
                 return;
             }
             Session::X11 => {} // fall through to the rdev key listener
         }
     }
 
-    start_rdev_listener(config, handler)
+    start_rdev_listener(config, handler, status)
 }
 
 /// Blocking rdev key listener (Windows, and Linux on X11).
-fn start_rdev_listener(config: Config, handler: CaptureHandler) {
+fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::StatusHandler) {
     let mut detector = DoubleTap::new(config.double_tap_window.as_millis() as u64);
     let mut last_trigger: Option<Instant> = None;
     let in_flight = Arc::new(AtomicBool::new(false));
@@ -90,8 +91,14 @@ fn start_rdev_listener(config: Config, handler: CaptureHandler) {
             }));
     };
 
+    // rdev::listen blocks on success, so "armed" is reported just before —
+    // an immediate error is then corrected by the Failed report (latest wins).
+    status(crate::TriggerStatus::Listening);
     if let Err(e) = listen(callback) {
         eprintln!("[copycopy] rdev::listen failed: {e:?}");
+        status(crate::TriggerStatus::Failed {
+            message: format!("rdev::listen failed: {e:?}"),
+        });
     }
 }
 
