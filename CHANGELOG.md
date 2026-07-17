@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/sincekmori/copycopy/compare/v0.3.1...v0.3.2) - 2026-07-17
+
+### Other
+
+- migrate the macOS backend to the objc2 crate family and dispatch2
+- apply the Rust 2024 style edition import ordering
+- commit Cargo.lock following the current Cargo guidance for libraries
+- move the missing_docs lint to the Cargo.toml lints table
+- add a related-crates comparison section to the README
+- migrate to the Rust 2024 edition and declare the verified MSRV of 1.88
+
 ## [0.3.1](https://github.com/sincekmori/copycopy/compare/v0.3.0...v0.3.1) - 2026-07-16
 
 ### Fixed
