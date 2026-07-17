@@ -5,11 +5,11 @@
 //! with a unicast `TakeCapture(serial)` call so it never rides the bus as a
 //! broadcast any process could observe. Runs blocking on the listener thread.
 
-use crate::capture::{build_event, html_is_meaningfully_rich, should_skip, Foreground};
+use crate::CaptureHandler;
+use crate::capture::{Foreground, build_event, html_is_meaningfully_rich, should_skip};
 use crate::config::Config;
 use crate::event::{Captured, RichFormat};
 use crate::gnome::installer::{self, InstallState};
-use crate::CaptureHandler;
 
 const BUS_NAME: &str = "org.gnome.Shell";
 const OBJECT_PATH: &str = "/io/github/sincekmori/copycopy";

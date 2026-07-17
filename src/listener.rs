@@ -9,17 +9,17 @@
 //! Wayland), other Wayland compositors are reported as unsupported, and X11
 //! falls through to the rdev path.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rdev::{listen, Event, EventType, Key};
+use rdev::{Event, EventType, Key, listen};
 
+use crate::CaptureHandler;
 use crate::capture::{clipboard_change_count, run_capture};
 use crate::config::Config;
 use crate::detector::DoubleTap;
-use crate::CaptureHandler;
 
 #[inline]
 fn is_trigger_modifier(key: Key) -> bool {
@@ -30,7 +30,7 @@ fn is_trigger_modifier(key: Key) -> bool {
 pub fn start_listener(config: Config, handler: CaptureHandler, status: crate::StatusHandler) {
     #[cfg(target_os = "linux")]
     {
-        use crate::gnome::installer::{detect_session, Session};
+        use crate::gnome::installer::{Session, detect_session};
         match detect_session() {
             Session::GnomeWayland => {
                 return crate::gnome::listener::start_listener(config, handler, status);

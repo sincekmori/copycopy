@@ -4,7 +4,7 @@
 //! Ctrl+C+C (Windows/Linux) / Cmd+C+C (macOS). A plain single copy keeps
 //! working. Quit with Ctrl+C in this terminal.
 
-use copycopy::{block_forever, start, Captured, Config};
+use copycopy::{Captured, Config, block_forever, start};
 
 fn main() {
     println!("copycopy: copy something, then press Ctrl/Cmd + C + C. (Ctrl+C here to quit.)");
