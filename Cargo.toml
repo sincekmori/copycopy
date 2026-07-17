@@ -1,6 +1,6 @@
 [package]
 name = "copycopy"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.88"
 description = "Global Ctrl/Cmd+C+C trigger: capture clipboard content + foreground app info and hand it to your code."
