@@ -45,7 +45,7 @@ fn now_millis() -> u64 {
 #[cfg(windows)]
 pub(crate) fn clipboard_change_count() -> u64 {
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetClipboardSequenceNumber() -> u32;
     }
     unsafe { GetClipboardSequenceNumber() as u64 }
@@ -55,9 +55,9 @@ pub(crate) fn clipboard_change_count() -> u64 {
 pub(crate) fn clipboard_change_count() -> u64 {
     use std::os::raw::{c_char, c_void};
     #[link(name = "AppKit", kind = "framework")]
-    extern "C" {}
+    unsafe extern "C" {}
     #[link(name = "objc", kind = "dylib")]
-    extern "C" {
+    unsafe extern "C" {
         fn objc_getClass(name: *const c_char) -> *mut c_void;
         fn sel_registerName(name: *const c_char) -> *mut c_void;
         fn objc_msgSend();
@@ -345,7 +345,7 @@ where
     struct OpaqueQueue {
         _private: [u8; 0],
     }
-    extern "C" {
+    unsafe extern "C" {
         static _dispatch_main_q: OpaqueQueue;
         fn dispatch_sync_f(
             queue: *const OpaqueQueue,

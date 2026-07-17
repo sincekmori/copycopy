@@ -28,12 +28,12 @@ const FIELD_KEYBOARD_AUTOREPEAT: u32 = 8; // kCGKeyboardEventAutorepeat
 const FIELD_KEYBOARD_KEYCODE: u32 = 9; // kCGKeyboardEventKeycode
 
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
 }
 // core-foundation 0.10 doesn't re-export this run-loop mode, so bind it directly.
 #[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kCFRunLoopCommonModes: CFStringRef;
 }
 
