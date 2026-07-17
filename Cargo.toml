@@ -7,8 +7,8 @@ description = "Global Ctrl/Cmd+C+C trigger: capture clipboard content + foregrou
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/sincekmori/copycopy"
-keywords = ["clipboard", "hotkey", "linux", "macos", "windows"]
-categories = ["os", "api-bindings"]
+keywords = ["clipboard", "hotkey", "wayland", "gnome", "tauri"]
+categories = ["os", "os::macos-apis", "os::linux-apis", "os::windows-apis", "api-bindings"]
 
 [lints.rust]
 missing_docs = "warn"
