@@ -10,6 +10,9 @@ repository = "https://github.com/sincekmori/copycopy"
 keywords = ["clipboard", "hotkey", "linux", "macos", "windows"]
 categories = ["os", "api-bindings"]
 
+[lints.rust]
+missing_docs = "warn"
+
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
 targets = [
