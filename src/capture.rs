@@ -14,9 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clipboard_rs::common::RustImage;
 use clipboard_rs::{Clipboard, ClipboardContext};
 
+use crate::CaptureHandler;
 use crate::config::Config;
 use crate::event::{CaptureEvent, Captured, RichFormat};
-use crate::CaptureHandler;
 
 /// Foreground application context captured alongside the clipboard. Defaults to
 /// all-empty, which is used when the active window cannot be read. Fields are
@@ -53,31 +53,8 @@ pub(crate) fn clipboard_change_count() -> u64 {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn clipboard_change_count() -> u64 {
-    use std::os::raw::{c_char, c_void};
-    #[link(name = "AppKit", kind = "framework")]
-    unsafe extern "C" {}
-    #[link(name = "objc", kind = "dylib")]
-    unsafe extern "C" {
-        fn objc_getClass(name: *const c_char) -> *mut c_void;
-        fn sel_registerName(name: *const c_char) -> *mut c_void;
-        fn objc_msgSend();
-    }
     // [[NSPasteboard generalPasteboard] changeCount]
-    unsafe {
-        let cls = objc_getClass(c"NSPasteboard".as_ptr());
-        if cls.is_null() {
-            return 0;
-        }
-        let send_obj: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
-            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        let pb = send_obj(cls, sel_registerName(c"generalPasteboard".as_ptr()));
-        if pb.is_null() {
-            return 0;
-        }
-        let send_int: unsafe extern "C" fn(*mut c_void, *mut c_void) -> isize =
-            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        send_int(pb, sel_registerName(c"changeCount".as_ptr())) as u64
-    }
+    objc2_app_kit::NSPasteboard::generalPasteboard().changeCount() as u64
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -148,41 +125,43 @@ fn read_clipboard(max_files: usize) -> Captured {
             return Captured::Files { paths };
         }
     }
-    if let Ok(img) = ctx.get_image() {
-        if !img.is_empty() {
-            let (width, height) = img.get_size();
-            let png = img
-                .to_png()
-                .ok()
-                .map(|b| b.get_bytes().to_vec())
-                .unwrap_or_default();
-            return Captured::Image { width, height, png };
-        }
+    if let Ok(img) = ctx.get_image()
+        && !img.is_empty()
+    {
+        let (width, height) = img.get_size();
+        let png = img
+            .to_png()
+            .ok()
+            .map(|b| b.get_bytes().to_vec())
+            .unwrap_or_default();
+        return Captured::Image { width, height, png };
     }
-    if let Ok(html) = ctx.get_html() {
-        if !html.trim().is_empty() && html_is_meaningfully_rich(&html) {
-            let plain = ctx.get_text().unwrap_or_default();
-            return Captured::RichText {
-                format: RichFormat::Html,
-                markup: html,
-                plain,
-            };
-        }
+    if let Ok(html) = ctx.get_html()
+        && !html.trim().is_empty()
+        && html_is_meaningfully_rich(&html)
+    {
+        let plain = ctx.get_text().unwrap_or_default();
+        return Captured::RichText {
+            format: RichFormat::Html,
+            markup: html,
+            plain,
+        };
     }
-    if let Ok(rtf) = ctx.get_rich_text() {
-        if !rtf.trim().is_empty() && rtf_is_meaningfully_rich(&rtf) {
-            let plain = ctx.get_text().unwrap_or_default();
-            return Captured::RichText {
-                format: RichFormat::Rtf,
-                markup: rtf,
-                plain,
-            };
-        }
+    if let Ok(rtf) = ctx.get_rich_text()
+        && !rtf.trim().is_empty()
+        && rtf_is_meaningfully_rich(&rtf)
+    {
+        let plain = ctx.get_text().unwrap_or_default();
+        return Captured::RichText {
+            format: RichFormat::Rtf,
+            markup: rtf,
+            plain,
+        };
     }
-    if let Ok(text) = ctx.get_text() {
-        if !text.is_empty() {
-            return Captured::Text { text };
-        }
+    if let Ok(text) = ctx.get_text()
+        && !text.is_empty()
+    {
+        return Captured::Text { text };
     }
     Captured::Empty
 }
@@ -258,12 +237,13 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
-                out.push(h * 16 + l);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push(h * 16 + l);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -332,54 +312,16 @@ fn wait_for_change_then_read(config: &Config, baseline: u64) -> Captured {
 
 /// Run `f` on the process main thread and return its result, via libdispatch's
 /// main queue. Must be called from a non-main thread while the host runs the main
-/// run loop (which drains the main queue). No framework dependency.
+/// run loop (which drains the main queue).
 #[cfg(target_os = "macos")]
 fn run_on_main<T, F>(f: F) -> T
 where
     F: FnOnce() -> T + Send,
     T: Send,
 {
-    use std::os::raw::c_void;
-
-    #[repr(C)]
-    struct OpaqueQueue {
-        _private: [u8; 0],
-    }
-    unsafe extern "C" {
-        static _dispatch_main_q: OpaqueQueue;
-        fn dispatch_sync_f(
-            queue: *const OpaqueQueue,
-            context: *mut c_void,
-            work: extern "C" fn(*mut c_void),
-        );
-    }
-
-    struct Ctx<T, F> {
-        f: Option<F>,
-        result: Option<T>,
-    }
-    extern "C" fn trampoline<T, F: FnOnce() -> T>(ctx: *mut c_void) {
-        // Safety: `ctx` points to the `Ctx` on the caller's stack, kept alive for
-        // the whole synchronous `dispatch_sync_f` call.
-        let ctx = unsafe { &mut *(ctx as *mut Ctx<T, F>) };
-        let f = ctx.f.take().expect("trampoline runs exactly once");
-        ctx.result = Some(f());
-    }
-
-    let mut ctx: Ctx<T, F> = Ctx {
-        f: Some(f),
-        result: None,
-    };
-    unsafe {
-        dispatch_sync_f(
-            &_dispatch_main_q,
-            &mut ctx as *mut _ as *mut c_void,
-            trampoline::<T, F>,
-        );
-    }
-    ctx.result
-        .take()
-        .expect("main-thread closure produced a result")
+    let mut result = None;
+    dispatch2::DispatchQueue::main().exec_sync(|| result = Some(f()));
+    result.expect("main-thread closure produced a result")
 }
 
 /// Runs on a worker thread. Window via main hop (URL lookup off main), then poll

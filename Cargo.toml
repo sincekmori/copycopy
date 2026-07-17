@@ -43,11 +43,13 @@ rdev = "0.5.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
-# macOS: install our own ListenOnly CGEventTap on the main run loop. Main-thread
-# hops use raw libdispatch (no extra crate); see src/capture.rs.
+# macOS: install our own ListenOnly CGEventTap on the main run loop, via the
+# objc2 framework crates. Main-thread hops use dispatch2; see src/capture.rs.
 [target.'cfg(target_os = "macos")'.dependencies]
-core-graphics = "0.25"
-core-foundation = "0.10"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFRunLoop", "CFMachPort"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes"] }
+dispatch2 = "0.3.1"
 
 [[example]]
 name = "print_events"

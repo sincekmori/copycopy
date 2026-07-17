@@ -158,11 +158,8 @@ where
 pub fn block_forever() -> ! {
     #[cfg(target_os = "macos")]
     {
-        unsafe extern "C" {
-            fn CFRunLoopRun();
-        }
         // Returns only if the run loop has no sources/timers; fall through to park.
-        unsafe { CFRunLoopRun() };
+        objc2_core_foundation::CFRunLoop::run();
     }
     loop {
         std::thread::park();
