@@ -195,6 +195,23 @@ Things to know:
 - **Screenshots don't trigger.** GNOME's PrtSc writes the clipboard once, and one clipboard write is a single copy by definition. The macOS-style "screenshot, then Ctrl+C+C to grab it" flow is out of scope on this backend — copy an image from an app (two Ctrl+C presses) instead.
 - `CaptureEvent.exec_path` is empty and `url` is `None` on this backend; `exec_name` carries the window's `wm_class`.
 
+## Related crates
+
+copycopy is the "copy gesture → capture" layer.
+These are the crates you would otherwise combine yourself, and in some cases the ones copycopy builds on.
+
+| Crate | What it does | Relation to copycopy |
+|-------|--------------|----------------------|
+| [arboard](https://crates.io/crates/arboard) | Cross-platform clipboard read/write | Lower level: no trigger and no app info; copycopy reads through clipboard-rs instead for multi-format support. |
+| [clipboard-rs](https://crates.io/crates/clipboard-rs) | Clipboard read/write across formats, plus change monitoring | Used by copycopy for the multi-format reads on Windows and macOS. |
+| [clipboard-master](https://crates.io/crates/clipboard-master) | Callback on every clipboard change | Complementary: use it to react to *every* change; copycopy fires only on the explicit double-copy gesture. No Wayland support. |
+| [rdev](https://crates.io/crates/rdev) | Raw global keyboard/mouse listening | Used by copycopy on Windows and Linux X11. Not used on macOS, where its callback hits main-thread-only APIs and crashes off the main thread; cannot work on Wayland. |
+| [global-hotkey](https://crates.io/crates/global-hotkey) | Registers global hotkeys | Registration consumes the keystroke, so binding Ctrl+C would break normal copying; copycopy listens passively instead. |
+| [x-win](https://crates.io/crates/x-win) | Foreground window info (app name, title, browser URL) | Used by copycopy to attach the app info to each capture. |
+
+Building this stack yourself from those pieces is doable.
+copycopy exists because the glue is the hard part: the double-tap state machine, the change-counter gating, the macOS main-thread choreography, and the GNOME Wayland extension.
+
 ## Limitations
 
 - Images embedded inside rich text are not captured, because no standalone bitmap is on the clipboard — copy the image by itself or as a file instead.
