@@ -5,9 +5,9 @@
 [![CI](https://github.com/sincekmori/copycopy/actions/workflows/ci.yml/badge.svg)](https://github.com/sincekmori/copycopy/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/copycopy.svg)](https://crates.io/crates/copycopy)
 
-A small cross-platform (Windows + macOS + Linux GNOME Wayland) Rust library that turns a global **Ctrl/Cmd + C + C** gesture into a structured capture and hands it to your code.
+A small cross-platform (Windows + macOS + Linux GNOME Wayland) Rust library that turns a global **double-copy** gesture — pressing **Ctrl/Cmd + C twice quickly** — into a structured capture and hands it to your code.
 
-Hold the platform modifier (Windows/Linux = **Ctrl**, macOS = **Cmd**) and press `C` **twice quickly**.
+Hold the platform modifier and press `C` **twice quickly**: a double Ctrl+C on Windows/Linux, a double Cmd+C on macOS.
 A normal single copy is never consumed.
 On each trigger your handler receives a `CaptureEvent` — the clipboard content plus the foreground app (name, window title, browser URL, PID) — on a worker thread.
 
@@ -19,14 +19,14 @@ For example:
 - **LLM on copy** — feed the content to a model, or pop up an action picker.
 - **Snippet capture, quick-share, clip-and-send**, and so on.
 
-Every one of those shares the same base — *Ctrl/Cmd+C+C → captured content → do something* — which is exactly what this crate provides.
+Every one of those shares the same base — *double-copy (Ctrl/Cmd+C+C) → captured content → do something* — which is exactly what this crate provides.
 
 ## Why a library
 
 The hard parts are the same for every such app, and they are fully encapsulated here.
 
 - **Passive listening** — listen-only key hooks, so a plain single copy still works (no global hotkey registration that would swallow the keystroke).
-- **An OS-independent double-tap state machine** — auto-repeat aware, and unit-tested.
+- **An OS-independent double-tap state machine** — detects Ctrl+C pressed twice within a window, auto-repeat aware, and unit-tested.
 - **The macOS minefield** — rdev crashes off the main thread, so we run our own `CGEventTap` on the main run loop and decode key codes directly, hop main-thread-only clipboard and window reads to the main thread via libdispatch, and keep the slow browser-URL lookup off it.
 - **The GNOME Wayland wall** — Wayland lets no background process observe keys or the clipboard, so on GNOME the crate ships (and auto-installs, no sudo) a tiny GNOME Shell extension that detects the gesture inside the compositor and hands captures over via unicast D-Bus. See [Linux (GNOME Wayland)](#linux-gnome-wayland).
 - **Reliable clipboard reads** — gated on the OS clipboard change counter, so we read the fresh copy rather than a stale one.
@@ -197,7 +197,7 @@ Things to know:
 
 ## Related crates
 
-copycopy is the "copy gesture → capture" layer.
+copycopy is the "double-copy gesture → capture" layer.
 These are the crates you would otherwise combine yourself, and in some cases the ones copycopy builds on.
 
 | Crate | What it does | Relation to copycopy |
