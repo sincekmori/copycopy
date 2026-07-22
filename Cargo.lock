@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "copycopy"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "clipboard-rs",
  "dispatch2",
