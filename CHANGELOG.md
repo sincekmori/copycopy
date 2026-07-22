@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/sincekmori/copycopy/compare/v0.3.3...v0.3.4) - 2026-07-22
+
+### Fixed
+
+- stop asking for Accessibility in the CGEventTap error since a ListenOnly tap needs Input Monitoring only
+
+### Other
+
+- describe the trigger as a double-copy (press Ctrl/Cmd+C twice) so natural-language searches match
+
 ## [0.3.3](https://github.com/sincekmori/copycopy/compare/v0.3.2...v0.3.3) - 2026-07-17
 
 ### Other
