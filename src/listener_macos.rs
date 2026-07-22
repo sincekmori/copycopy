@@ -143,8 +143,8 @@ pub fn install(config: Config, handler: CaptureHandler) -> Result<(), Error> {
     }
     .ok_or_else(|| {
         Error::ListenerInit(
-            "could not create CGEventTap — grant Input Monitoring (and Accessibility) to the \
-             host app (during development, that is your terminal)"
+            "could not create CGEventTap — grant Input Monitoring to the host app (during \
+             development, that is your terminal)"
                 .to_string(),
         )
     })?;
