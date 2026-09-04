@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/sincekmori/copycopy/compare/v0.3.5...v0.3.6) - 2026-09-04
+
+### Other
+
+- exclude .github from the published crate so CI-config changes no longer trigger releases
+- add a 7-day dependabot cooldown so dependency bumps are only proposed after a version has been public for a week
+
 ## [0.3.5](https://github.com/sincekmori/copycopy/compare/v0.3.4...v0.3.5) - 2026-09-04
 
 ### Other
