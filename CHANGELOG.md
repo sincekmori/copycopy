@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/sincekmori/copycopy/compare/v0.3.4...v0.3.5) - 2026-09-04
+
+### Other
+
+- *(deps)* bump crate-ci/typos in the actions group
+- *(deps)* bump x-win from 5.7.1 to 5.8.0 in the cargo group
+
 ## [0.3.4](https://github.com/sincekmori/copycopy/compare/v0.3.3...v0.3.4) - 2026-07-22
 
 ### Fixed
