@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/sincekmori/copycopy/compare/v0.4.2...v0.4.3) - 2026-10-02
+
+### Fixed
+
+- a clipboard its owner has just emptied is waited for instead of being read as empty — measured in Excel on Windows, the second Ctrl+C empties the clipboard, which is the change a capture wakes up on, and puts the cells back some fifty milliseconds later; a capture now goes back to a clipboard that holds nothing at all, without opening it, for up to two seconds
+
 ## [0.4.2](https://github.com/sincekmori/copycopy/compare/v0.4.1...v0.4.2) - 2026-10-02
 
 ### Fixed
