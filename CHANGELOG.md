@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/sincekmori/copycopy/compare/v0.4.0...v0.4.1) - 2026-10-02
+
+### Fixed
+
+- the URL is None on Linux, where x-win answers the lookup with a sentence saying it cannot read one and that sentence was passed on as the browser's address
+
 ## [0.4.0](https://github.com/sincekmori/copycopy/compare/v0.3.6...v0.4.0) - 2026-10-01
 
 ### Added
