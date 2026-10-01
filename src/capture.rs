@@ -226,10 +226,15 @@ fn rtf_is_meaningfully_rich(rtf: &str) -> bool {
     RICH.iter().any(|cw| rtf.contains(cw))
 }
 
-/// Strip a `file://` prefix (macOS and GNOME hand back URLs) and percent-decode.
+/// A clipboard file entry as a filesystem path. A `file://` URL (X11's
+/// `text/uri-list`, and the GNOME backend) is stripped and percent-decoded;
+/// anything else is already a path — Windows and macOS hand those back — and
+/// is kept as it is: a `%20` in a real file name is part of the name.
 pub(crate) fn normalize_file_path(raw: &str) -> String {
-    let s = raw.strip_prefix("file://").unwrap_or(raw);
-    percent_decode(s)
+    match raw.strip_prefix("file://") {
+        Some(path) => percent_decode(path),
+        None => raw.to_string(),
+    }
 }
 
 fn percent_decode(s: &str) -> String {
@@ -405,6 +410,19 @@ mod tests {
         assert_eq!(
             normalize_file_path("C:\\Users\\x\\a.png"),
             "C:\\Users\\x\\a.png"
+        );
+    }
+
+    #[test]
+    fn normalize_keeps_a_percent_in_a_real_path() {
+        // Not URLs: the `%20` is in the file's name on disk.
+        assert_eq!(
+            normalize_file_path("C:\\Users\\x\\Report%20Q3.pdf"),
+            "C:\\Users\\x\\Report%20Q3.pdf"
+        );
+        assert_eq!(
+            normalize_file_path("/Users/x/Report%20Q3.pdf"),
+            "/Users/x/Report%20Q3.pdf"
         );
     }
 
