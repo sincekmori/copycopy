@@ -45,6 +45,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      # release-pr runs cargo-semver-checks, which builds the crate's docs —
+      # and with them rdev, whose X11 bindings need the headers at build time.
+      - name: install X11 headers (rdev build dependency)
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxtst-dev libxi-dev
       - uses: release-plz/action@v0.5
         with:
           command: release-pr
