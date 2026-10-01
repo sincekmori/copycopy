@@ -65,6 +65,20 @@ pub(crate) fn clipboard_change_count() -> u64 {
 
 // ------------------------------- window ------------------------------------
 
+/// The browser's address for a window, where x-win can read one: Windows
+/// (UI Automation) and macOS (AppleScript). On Linux it cannot, and says so
+/// in its `Ok` value — a sentence, which is not a URL — so there the answer
+/// is none without asking.
+fn browser_url(info: &x_win::WindowInfo) -> Option<String> {
+    if cfg!(target_os = "linux") {
+        return None;
+    }
+    match x_win::get_browser_url(info) {
+        Ok(url) if !url.trim().is_empty() => Some(url),
+        _ => None,
+    }
+}
+
 /// Windows/Linux: read window + browser URL together (any thread). macOS splits
 /// this (see [`capture_macos`] / [`snapshot_with_url`]) to keep the slow URL
 /// lookup off the main thread.
@@ -72,10 +86,7 @@ pub(crate) fn clipboard_change_count() -> u64 {
 pub(crate) fn read_active_window() -> Foreground {
     match x_win::get_active_window() {
         Ok(info) => {
-            let url = match x_win::get_browser_url(&info) {
-                Ok(u) if !u.trim().is_empty() => Some(u),
-                _ => None,
-            };
+            let url = browser_url(&info);
             Foreground {
                 app_name: info.info.name,
                 exec_name: info.info.exec_name,
@@ -504,10 +515,7 @@ pub(crate) fn capture_macos(config: Config, handler: CaptureHandler, baseline: u
 fn snapshot_with_url(info: Option<x_win::WindowInfo>) -> Foreground {
     match info {
         Some(i) => {
-            let url = match x_win::get_browser_url(&i) {
-                Ok(u) if !u.trim().is_empty() => Some(u),
-                _ => None,
-            };
+            let url = browser_url(&i);
             Foreground {
                 app_name: i.info.name,
                 exec_name: i.info.exec_name,

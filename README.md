@@ -68,7 +68,7 @@ pub struct CaptureEvent {
     pub exec_name: String,
     pub exec_path: String,
     pub window_title: String,
-    pub url: Option<String>,   // chromium browsers only
+    pub url: Option<String>,   // chromium browsers only; None on Linux
     pub process_id: u32,
     pub content: Captured,
 }
@@ -224,6 +224,6 @@ copycopy exists because the glue is the hard part: the double-tap state machine,
 
 - Images embedded inside rich text are not captured, because no standalone bitmap is on the clipboard — copy the image by itself or as a file instead.
 - Audio and video arrive as file references (the `Files` variant), not as raw media.
-- The browser URL is chromium-only, and recent Chrome may need an accessibility helper.
+- The browser URL is chromium-only and never available on Linux, and recent Chrome may need an accessibility helper.
 - The listener runs for the process lifetime, since rdev has no stop API.
 - Global key hooks are commonly flagged by EDR/AV as keyloggers, so code-sign for distribution; the clipboard may hold secrets: copies flagged as such by their source app are skipped, and `denylist_exec_substrings` excludes apps that do not flag theirs.

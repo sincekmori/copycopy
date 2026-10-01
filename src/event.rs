@@ -72,7 +72,8 @@ pub struct CaptureEvent {
     pub exec_path: String,
     /// Foreground window title (empty if unavailable / lacking permission).
     pub window_title: String,
-    /// Browser URL when the foreground app is a supported chromium browser.
+    /// Browser URL when the foreground app is a supported chromium browser
+    /// (Windows and macOS; always `None` on Linux).
     pub url: Option<String>,
     /// Foreground process id.
     pub process_id: u32,
