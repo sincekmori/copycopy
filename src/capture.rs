@@ -5,6 +5,9 @@
 //! - Files are delivered as normalized filesystem paths (read them downstream).
 //! - Audio/Video are not on the clipboard as media — only as file references.
 //! - A copy its source marked as a secret is not delivered at all.
+//! - A clipboard that offers what it will not hand over yet — another program
+//!   has it open, or its owner has still to render what it promised — is read
+//!   again until it does, for two seconds at most (Windows and Linux).
 //!
 //! On macOS the clipboard/window reads must run on the process main thread;
 //! [`capture_macos`] hops to the main thread via libdispatch while sleeping off it.
@@ -13,7 +16,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clipboard_rs::common::RustImage;
-use clipboard_rs::{Clipboard, ClipboardContext};
+use clipboard_rs::{Clipboard, ClipboardContext, ContentFormat};
 
 use crate::CaptureHandler;
 use crate::config::Config;
@@ -119,20 +122,141 @@ pub(crate) fn should_skip(fg: &Foreground, denylist: &[String]) -> bool {
 
 // ----------------------------- clipboard read ------------------------------
 
-/// One clipboard read: `None` when the source app marked the content as a
-/// secret (see [`marks_concealed`]), and nothing is delivered then.
+/// What one read of the clipboard came back with.
+#[derive(Debug)]
+enum Read {
+    /// The source app marked the content as a secret (see
+    /// [`marks_concealed`]): nothing is delivered.
+    Secret,
+    /// The clipboard handed over all it offered.
+    Whole(Captured),
+    /// The clipboard offered something it would not hand over just then:
+    /// another program had it open, or its owner had still to render what it
+    /// promised. The content is what the rest amounts to — another read may
+    /// find the whole.
+    Partial(Captured),
+}
+
+impl Read {
+    /// What is delivered when this read is the last one: nothing for a
+    /// secret, else its content.
+    fn delivered(self) -> Option<Captured> {
+        match self {
+            Self::Secret => None,
+            Self::Whole(content) | Self::Partial(content) => Some(content),
+        }
+    }
+}
+
+/// How long a capture goes back to a clipboard that offers what it will not
+/// hand over yet (see [`Read::Partial`]). A spreadsheet's cells are the case:
+/// the app promises some twenty formats and renders each on request, the
+/// system's clipboard history and every other listener ask for theirs at
+/// once, and for a moment after the copy the clipboard is open in their
+/// hands — where a single read finds nothing at all.
+#[cfg(not(target_os = "macos"))]
+const READ_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Read until the clipboard hands over all it offers; once `patience` is
+/// spent, what could be read has to do. `None` for a secret.
+#[cfg(any(not(target_os = "macos"), test))]
+fn read_whole(
+    mut read: impl FnMut() -> Read,
+    patience: std::time::Duration,
+    step: std::time::Duration,
+) -> Option<Captured> {
+    let started = std::time::Instant::now();
+    loop {
+        match read() {
+            Read::Partial(_) if started.elapsed() < patience => {
+                thread::sleep(step.max(std::time::Duration::from_millis(1)));
+            }
+            last => return last.delivered(),
+        }
+    }
+}
+
+/// Whether another program has the clipboard open right now. Windows lets
+/// one window at a time open it, and a read tried meanwhile fails the way a
+/// read of an empty clipboard does.
+#[cfg(windows)]
+fn clipboard_held_elsewhere() -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn OpenClipboard(owner: *mut core::ffi::c_void) -> i32;
+        fn CloseClipboard() -> i32;
+    }
+    unsafe {
+        if OpenClipboard(core::ptr::null_mut()) == 0 {
+            return true;
+        }
+        CloseClipboard();
+    }
+    false
+}
+
+#[cfg(not(windows))]
+fn clipboard_held_elsewhere() -> bool {
+    false
+}
+
+/// The formats a capture reads, for asking the clipboard which it offers.
+const READ_FORMATS: [ContentFormat; 5] = [
+    ContentFormat::Files,
+    ContentFormat::Text,
+    ContentFormat::Html,
+    ContentFormat::Image,
+    ContentFormat::Rtf,
+];
+
+/// What a read returned — and, when it failed for a format the clipboard
+/// offers, a note in `unread` that there is more to come back for.
+fn fetched<T>(
+    ctx: &ClipboardContext,
+    format: ContentFormat,
+    read: clipboard_rs::Result<T>,
+    unread: &mut bool,
+) -> Option<T> {
+    if read.is_err() {
+        *unread |= ctx.has(format);
+    }
+    read.ok()
+}
+
+/// One clipboard read.
 ///
 /// Priority: files > text, when text is what was copied (see
 /// [`text_outranks_image`]) > image > rich text > plain text.
-fn read_clipboard(max_files: usize) -> Option<Captured> {
+fn read_clipboard(max_files: usize) -> Read {
+    if clipboard_held_elsewhere() {
+        return Read::Partial(Captured::Empty);
+    }
     let Ok(ctx) = ClipboardContext::new() else {
-        return Some(Captured::Empty);
+        return Read::Whole(Captured::Empty);
     };
-    if is_concealed(&ctx) {
-        return None;
+    // The list of formats is where a secret is marked: content that offers
+    // itself without one could not be listed, and is not read unchecked.
+    let formats = ctx.available_formats().unwrap_or_default();
+    if formats.is_empty() && READ_FORMATS.into_iter().any(|format| ctx.has(format)) {
+        return Read::Partial(Captured::Empty);
+    }
+    if is_concealed(&ctx, &formats) {
+        return Read::Secret;
     }
 
-    if let Ok(files) = ctx.get_files() {
+    let mut unread = false;
+    let content = read_content(&ctx, max_files, &mut unread);
+    if unread {
+        Read::Partial(content)
+    } else {
+        Read::Whole(content)
+    }
+}
+
+/// The clipboard's content by the priority of [`read_clipboard`], with a
+/// note in `unread` of an offered format that would not be handed over.
+fn read_content(ctx: &ClipboardContext, max_files: usize, unread: &mut bool) -> Captured {
+    if let Some(files) = fetched(ctx, ContentFormat::Files, ctx.get_files(), unread) {
         let paths: Vec<String> = files
             .into_iter()
             .filter(|s| !s.trim().is_empty())
@@ -140,13 +264,14 @@ fn read_clipboard(max_files: usize) -> Option<Captured> {
             .take(max_files)
             .collect();
         if !paths.is_empty() {
-            return Some(Captured::Files { paths });
+            return Captured::Files { paths };
         }
     }
-    let plain = ctx.get_text().unwrap_or_default();
-    let html = ctx.get_html().ok().filter(|html| !html.trim().is_empty());
+    let plain = fetched(ctx, ContentFormat::Text, ctx.get_text(), unread).unwrap_or_default();
+    let html = fetched(ctx, ContentFormat::Html, ctx.get_html(), unread)
+        .filter(|html| !html.trim().is_empty());
     if !text_outranks_image(&plain, html.as_deref())
-        && let Ok(img) = ctx.get_image()
+        && let Some(img) = fetched(ctx, ContentFormat::Image, ctx.get_image(), unread)
         && !img.is_empty()
     {
         let (width, height) = img.get_size();
@@ -155,40 +280,38 @@ fn read_clipboard(max_files: usize) -> Option<Captured> {
             .ok()
             .map(|b| b.get_bytes().to_vec())
             .unwrap_or_default();
-        return Some(Captured::Image { width, height, png });
+        return Captured::Image { width, height, png };
     }
     if let Some(html) = html
         && html_is_meaningfully_rich(&html)
     {
-        return Some(Captured::RichText {
+        return Captured::RichText {
             format: RichFormat::Html,
             markup: html,
             plain,
-        });
+        };
     }
-    if let Ok(rtf) = ctx.get_rich_text()
+    if let Some(rtf) = fetched(ctx, ContentFormat::Rtf, ctx.get_rich_text(), unread)
         && !rtf.trim().is_empty()
         && rtf_is_meaningfully_rich(&rtf)
     {
-        return Some(Captured::RichText {
+        return Captured::RichText {
             format: RichFormat::Rtf,
             markup: rtf,
             plain,
-        });
+        };
     }
     if !plain.is_empty() {
-        return Some(Captured::Text { text: plain });
+        return Captured::Text { text: plain };
     }
-    Some(Captured::Empty)
+    Captured::Empty
 }
 
-/// Whether the clipboard carries a marker that its content is a secret.
-fn is_concealed(ctx: &ClipboardContext) -> bool {
-    ctx.available_formats().is_ok_and(|formats| {
-        formats
-            .iter()
-            .any(|format| marks_concealed(format, || ctx.get_buffer(format).ok()))
-    })
+/// Whether the clipboard's formats carry a marker that its content is a secret.
+fn is_concealed(ctx: &ClipboardContext, formats: &[String]) -> bool {
+    formats
+        .iter()
+        .any(|format| marks_concealed(format, || ctx.get_buffer(format).ok()))
 }
 
 /// Whether a clipboard format is an app's way of saying "this is a secret":
@@ -451,14 +574,13 @@ pub(crate) fn run_capture(config: &Config, handler: &CaptureHandler, baseline: u
 #[cfg(not(target_os = "macos"))]
 fn wait_for_change_then_read(config: &Config, baseline: u64) -> Option<Captured> {
     let step = config.clipboard_poll_step;
-    let steps = poll_step_count(config);
-    for _ in 0..steps {
+    for _ in 0..poll_step_count(config) {
         thread::sleep(step);
         if clipboard_change_count() != baseline {
-            return read_clipboard(config.max_files);
+            break;
         }
     }
-    read_clipboard(config.max_files)
+    read_whole(|| read_clipboard(config.max_files), READ_PATIENCE, step)
 }
 
 // --------------------------------- macOS -----------------------------------
@@ -495,13 +617,14 @@ pub(crate) fn capture_macos(config: Config, handler: CaptureHandler, baseline: u
     for _ in 0..steps {
         thread::sleep(step);
         read = run_on_main(move || {
-            (clipboard_change_count() != baseline).then(|| read_clipboard(max_files))
+            (clipboard_change_count() != baseline).then(|| read_clipboard(max_files).delivered())
         });
         if read.is_some() {
             break;
         }
     }
-    let content = read.unwrap_or_else(|| run_on_main(move || read_clipboard(max_files)));
+    let content =
+        read.unwrap_or_else(|| run_on_main(move || read_clipboard(max_files).delivered()));
 
     // A secret is not delivered at all, like a denylisted app.
     if let Some(content) = content {
@@ -678,6 +801,36 @@ mod tests {
         assert_eq!(poll_step_count(&cfg(10, 20)), 1); // timeout < step => read once
         assert_eq!(poll_step_count(&cfg(0, 20)), 1); // zero timeout => read once
         assert_eq!(poll_step_count(&cfg(400, 0)), 400); // zero step => no divide-by-zero
+    }
+
+    #[test]
+    fn a_partial_read_is_gone_back_to() {
+        use std::time::Duration;
+        let text = |text: &str| Captured::Text {
+            text: text.to_string(),
+        };
+        let says = |got: Option<Captured>, want: &str| matches!(got, Some(Captured::Text { text }) if text == want);
+        let step = Duration::from_millis(1);
+        let patient = Duration::from_secs(5);
+
+        // The clipboard is busy twice, then hands over the whole.
+        let mut reads = vec![
+            Read::Whole(text("whole")),
+            Read::Partial(Captured::Empty),
+            Read::Partial(text("part")),
+        ];
+        let got = read_whole(|| reads.pop().expect("a fourth read"), patient, step);
+        assert!(says(got, "whole"));
+        assert!(reads.is_empty());
+
+        // Patience spent: what could be read has to do.
+        let got = read_whole(|| Read::Partial(text("part")), Duration::ZERO, step);
+        assert!(says(got, "part"));
+
+        // A secret is not delivered, whatever came before it.
+        let mut reads = vec![Read::Secret, Read::Partial(text("part"))];
+        let got = read_whole(|| reads.pop().expect("a third read"), patient, step);
+        assert!(got.is_none());
     }
 
     #[test]
