@@ -53,6 +53,79 @@ const TAKE_TTL_MS = 5000;
 
 const PLAIN_TEXT_MIMES = ['text/plain;charset=utf-8', 'UTF8_STRING', 'text/plain'];
 
+// The KDE convention password managers follow on Linux: an offer carrying
+// this MIME with the value "secret" is to be left alone.
+const CONCEALED_MIME = 'x-kde-passwordManagerHint';
+
+// Whether the text of a clipboard offer, rather than the image beside it, is
+// what was copied. Mirrors `text_outranks_image` in src/capture.rs, where the
+// reasoning lives — keep the two in step.
+function textOutranksImage(plain, html) {
+    const text = plain.trim();
+    if (text === '')
+        return false;
+    if (html !== null)
+        return htmlHasVisibleText(html);
+    return !isLoneLocator(text);
+}
+
+// Elements whose content a page does not show.
+const UNSHOWN_ELEMENTS = ['head', 'script', 'style', 'title'];
+
+function htmlHasVisibleText(html) {
+    let rest = html.toLowerCase();
+    for (;;) {
+        const open = rest.indexOf('<');
+        if (open === -1)
+            return showsText(rest);
+        if (showsText(rest.slice(0, open)))
+            return true;
+        rest = rest.slice(open);
+        if (rest.startsWith('<!--')) {
+            const close = rest.indexOf('-->', 4);
+            rest = close === -1 ? '' : rest.slice(close + 3);
+            continue;
+        }
+        const end = tagEnd(rest);
+        if (end === -1)
+            return false;
+        const name = rest.slice(1, end).match(/^[a-z0-9]*/)[0];
+        rest = rest.slice(end + 1);
+        if (UNSHOWN_ELEMENTS.includes(name)) {
+            const close = rest.indexOf(`</${name}`);
+            rest = close === -1 ? '' : rest.slice(close);
+        }
+    }
+}
+
+function tagEnd(tag) {
+    let quote = null;
+    for (let at = 0; at < tag.length; at++) {
+        const c = tag[at];
+        if (quote !== null) {
+            if (c === quote)
+                quote = null;
+        } else if (c === '"' || c === "'") {
+            quote = c;
+        } else if (c === '>') {
+            return at;
+        }
+    }
+    return tag.indexOf('>');
+}
+
+function showsText(text) {
+    return text.replace(/&(nbsp|#160|#xa0);/g, ' ').trim() !== '';
+}
+
+function isLoneLocator(text) {
+    const oneToken = !/\s/.test(text);
+    const oneLine = !/[\n\r]/.test(text);
+    const address = text.includes('://') || text.startsWith('data:');
+    const path = text.startsWith('/') || text.startsWith('\\\\') || /^.:\\/.test(text);
+    return (oneToken && address) || (oneLine && path);
+}
+
 const IFACE_XML = `
 <node>
   <interface name="${DBUS_IFACE}">
@@ -185,7 +258,23 @@ export default class CopycopyExtension extends Extension {
             return;
         }
         this._captureArmed = false;
-        this._readByPriority(mimes, payload => this._publish(payload));
+        this._unlessConcealed(mimes, () =>
+            this._readByPriority(mimes, payload => this._publish(payload)));
+    }
+
+    // A copy its source marked as a secret is never published — the mirror
+    // of `marks_concealed` in src/capture.rs. A mark that cannot be read
+    // counts as set.
+    _unlessConcealed(mimes, proceed) {
+        if (!mimes.includes(CONCEALED_MIME)) {
+            proceed();
+            return;
+        }
+        this._getBytes(CONCEALED_MIME, data => {
+            const hint = data ? new TextDecoder().decode(data).trim() : 'secret';
+            if (hint !== 'secret')
+                proceed();
+        });
     }
 
     _clipboardMimetypes() {
@@ -211,19 +300,38 @@ export default class CopycopyExtension extends Extension {
         // character) into bare text/plain, so that one is tried last.
         const plainMime = PLAIN_TEXT_MIMES.find(m => mimes.includes(m)) ?? null;
 
-        const attempts = [];
-        if (mimes.includes('text/uri-list'))
-            attempts.push({kind: 'files', mime: 'text/uri-list'});
-        else if (mimes.includes('x-special/gnome-copied-files'))
-            attempts.push({kind: 'files', mime: 'x-special/gnome-copied-files'});
-        if (mimes.includes('image/png'))
-            attempts.push({kind: 'image', mime: 'image/png'});
-        if (mimes.includes('text/html'))
-            attempts.push({kind: 'rich', mime: 'text/html'});
-        if (plainMime)
-            attempts.push({kind: 'text', mime: plainMime});
+        const hasImage = mimes.includes('image/png');
+        const hasHtml = mimes.includes('text/html');
 
-        this._tryAttempts(attempts, plainMime, callback);
+        const attempts = textFirst => {
+            const files = [];
+            if (mimes.includes('text/uri-list'))
+                files.push({kind: 'files', mime: 'text/uri-list'});
+            else if (mimes.includes('x-special/gnome-copied-files'))
+                files.push({kind: 'files', mime: 'x-special/gnome-copied-files'});
+            const image = hasImage ? [{kind: 'image', mime: 'image/png'}] : [];
+            const text = [];
+            if (hasHtml)
+                text.push({kind: 'rich', mime: 'text/html'});
+            if (plainMime)
+                text.push({kind: 'text', mime: plainMime});
+            return [...files, ...(textFirst ? [...text, ...image] : [...image, ...text])];
+        };
+
+        // An image offered together with text: which of the two was copied
+        // takes a look at the text (see textOutranksImage).
+        if (!hasImage || !plainMime) {
+            this._tryAttempts(attempts(false), plainMime, callback);
+            return;
+        }
+        this._getText(plainMime, plain => {
+            const decide = html =>
+                this._tryAttempts(attempts(textOutranksImage(plain, html)), plainMime, callback);
+            if (hasHtml)
+                this._getText('text/html', html => decide(html.trim() === '' ? null : html));
+            else
+                decide(null);
+        });
     }
 
     // Read `attempts` in order until one returns non-empty content; fall back
@@ -249,6 +357,10 @@ export default class CopycopyExtension extends Extension {
             }
             callback({kind: attempt.kind, mime: attempt.mime, data, plain: ''});
         });
+    }
+
+    _getText(mime, callback) {
+        this._getBytes(mime, data => callback(data ? new TextDecoder().decode(data) : ''));
     }
 
     _getBytes(mime, callback) {

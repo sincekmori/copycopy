@@ -4,6 +4,7 @@
 //! - Image is delivered as PNG-encoded bytes.
 //! - Files are delivered as normalized filesystem paths (read them downstream).
 //! - Audio/Video are not on the clipboard as media — only as file references.
+//! - A copy its source marked as a secret is not delivered at all.
 //!
 //! On macOS the clipboard/window reads must run on the process main thread;
 //! [`capture_macos`] hops to the main thread via libdispatch while sleeping off it.
@@ -107,12 +108,18 @@ pub(crate) fn should_skip(fg: &Foreground, denylist: &[String]) -> bool {
 
 // ----------------------------- clipboard read ------------------------------
 
-/// One clipboard read. Priority: files > image > rich text > plain text.
-fn read_clipboard(max_files: usize) -> Captured {
-    let ctx = match ClipboardContext::new() {
-        Ok(c) => c,
-        Err(_) => return Captured::Empty,
+/// One clipboard read: `None` when the source app marked the content as a
+/// secret (see [`marks_concealed`]), and nothing is delivered then.
+///
+/// Priority: files > text, when text is what was copied (see
+/// [`text_outranks_image`]) > image > rich text > plain text.
+fn read_clipboard(max_files: usize) -> Option<Captured> {
+    let Ok(ctx) = ClipboardContext::new() else {
+        return Some(Captured::Empty);
     };
+    if is_concealed(&ctx) {
+        return None;
+    }
 
     if let Ok(files) = ctx.get_files() {
         let paths: Vec<String> = files
@@ -122,10 +129,13 @@ fn read_clipboard(max_files: usize) -> Captured {
             .take(max_files)
             .collect();
         if !paths.is_empty() {
-            return Captured::Files { paths };
+            return Some(Captured::Files { paths });
         }
     }
-    if let Ok(img) = ctx.get_image()
+    let plain = ctx.get_text().unwrap_or_default();
+    let html = ctx.get_html().ok().filter(|html| !html.trim().is_empty());
+    if !text_outranks_image(&plain, html.as_deref())
+        && let Ok(img) = ctx.get_image()
         && !img.is_empty()
     {
         let (width, height) = img.get_size();
@@ -134,36 +144,161 @@ fn read_clipboard(max_files: usize) -> Captured {
             .ok()
             .map(|b| b.get_bytes().to_vec())
             .unwrap_or_default();
-        return Captured::Image { width, height, png };
+        return Some(Captured::Image { width, height, png });
     }
-    if let Ok(html) = ctx.get_html()
-        && !html.trim().is_empty()
+    if let Some(html) = html
         && html_is_meaningfully_rich(&html)
     {
-        let plain = ctx.get_text().unwrap_or_default();
-        return Captured::RichText {
+        return Some(Captured::RichText {
             format: RichFormat::Html,
             markup: html,
             plain,
-        };
+        });
     }
     if let Ok(rtf) = ctx.get_rich_text()
         && !rtf.trim().is_empty()
         && rtf_is_meaningfully_rich(&rtf)
     {
-        let plain = ctx.get_text().unwrap_or_default();
-        return Captured::RichText {
+        return Some(Captured::RichText {
             format: RichFormat::Rtf,
             markup: rtf,
             plain,
+        });
+    }
+    if !plain.is_empty() {
+        return Some(Captured::Text { text: plain });
+    }
+    Some(Captured::Empty)
+}
+
+/// Whether the clipboard carries a marker that its content is a secret.
+fn is_concealed(ctx: &ClipboardContext) -> bool {
+    ctx.available_formats().is_ok_and(|formats| {
+        formats
+            .iter()
+            .any(|format| marks_concealed(format, || ctx.get_buffer(format).ok()))
+    })
+}
+
+/// Whether a clipboard format is an app's way of saying "this is a secret":
+/// the markers password managers put next to what they copy, so that clipboard
+/// tools leave it alone. `value` reads the format's data, for the markers
+/// whose value carries the meaning; a marker whose value cannot be read counts
+/// as set, since the app bothered to put it there.
+///
+/// - macOS: `org.nspasteboard.ConcealedType` (<http://nspasteboard.org>) and
+///   1Password's older `com.agilebits.onepassword`.
+/// - Windows: `ExcludeClipboardContentFromMonitorProcessing`, and
+///   `CanIncludeInClipboardHistory` / `CanUploadToCloudClipboard` set to 0.
+/// - Linux: `x-kde-passwordManagerHint` set to `secret`.
+pub(crate) fn marks_concealed(format: &str, value: impl FnOnce() -> Option<Vec<u8>>) -> bool {
+    match format {
+        "org.nspasteboard.ConcealedType"
+        | "com.agilebits.onepassword"
+        | "ExcludeClipboardContentFromMonitorProcessing" => true,
+        // A DWORD: 0 keeps the content out of the history / off other devices.
+        "CanIncludeInClipboardHistory" | "CanUploadToCloudClipboard" => {
+            value().is_none_or(|bytes| bytes.iter().take(4).all(|byte| *byte == 0))
+        }
+        "x-kde-passwordManagerHint" => value().is_none_or(|bytes| bytes.trim_ascii() == b"secret"),
+        _ => false,
+    }
+}
+
+/// Whether the text on the clipboard, rather than the image beside it, is what
+/// the user copied. Spreadsheet, slide and note apps put a rendered bitmap
+/// next to the text of a selection (cells copied in Excel arrive as their
+/// text, an HTML table, and a picture of the cells), and there the text is the
+/// content. A browser's "Copy image" does the opposite: the image is the
+/// content, and what comes with it is its address or an `<img>` tag.
+///
+/// The markup tells the two apart when there is one — it describes the same
+/// copy, so text showing in it means text was copied. Without markup, text
+/// counts unless it is a lone address or path, which names the image.
+pub(crate) fn text_outranks_image(plain: &str, html: Option<&str>) -> bool {
+    let plain = plain.trim();
+    if plain.is_empty() {
+        return false;
+    }
+    match html {
+        Some(html) => html_has_visible_text(html),
+        None => !is_lone_locator(plain),
+    }
+}
+
+/// Elements whose content a page does not show.
+const UNSHOWN_ELEMENTS: [&str; 4] = ["head", "script", "style", "title"];
+
+/// Whether HTML shows any text once its tags are gone: an `<img>` alone, or
+/// markup wrapping nothing, shows none, and neither do comments or what sits
+/// in the [`UNSHOWN_ELEMENTS`] — office apps hand over a whole document, its
+/// stylesheet ahead of the body.
+fn html_has_visible_text(html: &str) -> bool {
+    // Lowercasing ASCII alone keeps every byte offset, and what shows.
+    let html = html.to_ascii_lowercase();
+    let mut rest = html.as_str();
+    while let Some(open) = rest.find('<') {
+        if shows_text(&rest[..open]) {
+            return true;
+        }
+        rest = &rest[open..];
+        if let Some(comment) = rest.strip_prefix("<!--") {
+            rest = comment.split_once("-->").map_or("", |(_, after)| after);
+            continue;
+        }
+        let Some(end) = tag_end(rest) else {
+            return false;
         };
+        let name = rest[1..end]
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .next()
+            .unwrap_or_default();
+        rest = &rest[end + 1..];
+        if UNSHOWN_ELEMENTS.contains(&name) {
+            // Up to the element's end tag; left open, it takes the rest.
+            rest = rest
+                .find(&format!("</{name}"))
+                .map_or("", |close| &rest[close..]);
+        }
     }
-    if let Ok(text) = ctx.get_text()
-        && !text.is_empty()
-    {
-        return Captured::Text { text };
+    shows_text(rest)
+}
+
+/// The index of the `>` that closes the tag `tag` starts with. A `>` inside a
+/// quoted attribute value does not close it — unless the quote never ends,
+/// where the first `>` has to do.
+fn tag_end(tag: &str) -> Option<usize> {
+    let mut quote = None;
+    for (at, c) in tag.char_indices() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '>') => return Some(at),
+            (None, _) => {}
+        }
     }
-    Captured::Empty
+    tag.find('>')
+}
+
+/// Whether the text between tags shows anything but space.
+fn shows_text(text: &str) -> bool {
+    ["&nbsp;", "&#160;", "&#xa0;"]
+        .iter()
+        .fold(text.to_string(), |text, space| text.replace(space, " "))
+        .chars()
+        .any(|c| !c.is_whitespace())
+}
+
+/// Whether text is one address or one absolute path, and nothing else.
+fn is_lone_locator(text: &str) -> bool {
+    let one_token = !text.contains(char::is_whitespace);
+    let one_line = !text.contains(['\n', '\r']);
+    let address = text.contains("://") || text.starts_with("data:");
+    let path = text.starts_with('/')
+        || text.starts_with("\\\\")
+        || text.as_bytes().get(1..3) == Some(b":\\".as_slice());
+    (one_token && address) || (one_line && path)
 }
 
 /// HTML is rich only with an actual formatting/structure tag (not just a styled
@@ -226,10 +361,15 @@ fn rtf_is_meaningfully_rich(rtf: &str) -> bool {
     RICH.iter().any(|cw| rtf.contains(cw))
 }
 
-/// Strip a `file://` prefix (macOS and GNOME hand back URLs) and percent-decode.
+/// A clipboard file entry as a filesystem path. A `file://` URL (X11's
+/// `text/uri-list`, and the GNOME backend) is stripped and percent-decoded;
+/// anything else is already a path — Windows and macOS hand those back — and
+/// is kept as it is: a `%20` in a real file name is part of the name.
 pub(crate) fn normalize_file_path(raw: &str) -> String {
-    let s = raw.strip_prefix("file://").unwrap_or(raw);
-    percent_decode(s)
+    match raw.strip_prefix("file://") {
+        Some(path) => percent_decode(path),
+        None => raw.to_string(),
+    }
 }
 
 fn percent_decode(s: &str) -> String {
@@ -291,12 +431,14 @@ pub(crate) fn run_capture(config: &Config, handler: &CaptureHandler, baseline: u
     if should_skip(&fg, &config.denylist_exec_substrings) {
         return;
     }
-    let content = wait_for_change_then_read(config, baseline);
-    handler(build_event(fg, content));
+    // A secret is not delivered at all, like a denylisted app.
+    if let Some(content) = wait_for_change_then_read(config, baseline) {
+        handler(build_event(fg, content));
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn wait_for_change_then_read(config: &Config, baseline: u64) -> Captured {
+fn wait_for_change_then_read(config: &Config, baseline: u64) -> Option<Captured> {
     let step = config.clipboard_poll_step;
     let steps = poll_step_count(config);
     for _ in 0..steps {
@@ -338,27 +480,22 @@ pub(crate) fn capture_macos(config: Config, handler: CaptureHandler, baseline: u
     let step = config.clipboard_poll_step;
     let steps = poll_step_count(&config);
     let max_files = config.max_files;
-    let mut content: Option<Captured> = None;
+    let mut read: Option<Option<Captured>> = None;
     for _ in 0..steps {
         thread::sleep(step);
-        let changed = run_on_main(move || {
-            if clipboard_change_count() != baseline {
-                Some(read_clipboard(max_files))
-            } else {
-                None
-            }
+        read = run_on_main(move || {
+            (clipboard_change_count() != baseline).then(|| read_clipboard(max_files))
         });
-        if let Some(c) = changed {
-            content = Some(c);
+        if read.is_some() {
             break;
         }
     }
-    let content = match content {
-        Some(c) => c,
-        None => run_on_main(move || read_clipboard(max_files)),
-    };
+    let content = read.unwrap_or_else(|| run_on_main(move || read_clipboard(max_files)));
 
-    handler(build_event(fg, content));
+    // A secret is not delivered at all, like a denylisted app.
+    if let Some(content) = content {
+        handler(build_event(fg, content));
+    }
 }
 
 /// Build the foreground snapshot OFF the main thread: `get_browser_url` spawns
@@ -406,6 +543,103 @@ mod tests {
             normalize_file_path("C:\\Users\\x\\a.png"),
             "C:\\Users\\x\\a.png"
         );
+    }
+
+    #[test]
+    fn normalize_keeps_a_percent_in_a_real_path() {
+        // Not URLs: the `%20` is in the file's name on disk.
+        assert_eq!(
+            normalize_file_path("C:\\Users\\x\\Report%20Q3.pdf"),
+            "C:\\Users\\x\\Report%20Q3.pdf"
+        );
+        assert_eq!(
+            normalize_file_path("/Users/x/Report%20Q3.pdf"),
+            "/Users/x/Report%20Q3.pdf"
+        );
+    }
+
+    #[test]
+    fn concealed_markers() {
+        let unread = || None;
+        assert!(marks_concealed("org.nspasteboard.ConcealedType", unread));
+        assert!(marks_concealed("com.agilebits.onepassword", unread));
+        assert!(marks_concealed(
+            "ExcludeClipboardContentFromMonitorProcessing",
+            unread
+        ));
+        assert!(!marks_concealed("public.utf8-plain-text", unread));
+        assert!(!marks_concealed("org.nspasteboard.TransientType", unread));
+
+        // Windows: a DWORD, where 0 means "keep it out".
+        let dword = |n: u32| move || Some(n.to_le_bytes().to_vec());
+        assert!(marks_concealed("CanIncludeInClipboardHistory", dword(0)));
+        assert!(!marks_concealed("CanIncludeInClipboardHistory", dword(1)));
+        assert!(marks_concealed("CanUploadToCloudClipboard", dword(0)));
+        assert!(!marks_concealed("CanUploadToCloudClipboard", dword(1)));
+        assert!(marks_concealed("CanIncludeInClipboardHistory", unread));
+
+        // KDE: the value says what kind of hint it is.
+        let hint = |s: &'static str| move || Some(s.as_bytes().to_vec());
+        assert!(marks_concealed("x-kde-passwordManagerHint", hint("secret")));
+        assert!(marks_concealed(
+            "x-kde-passwordManagerHint",
+            hint("secret\n")
+        ));
+        assert!(!marks_concealed(
+            "x-kde-passwordManagerHint",
+            hint("public")
+        ));
+        assert!(marks_concealed("x-kde-passwordManagerHint", unread));
+    }
+
+    #[test]
+    fn text_next_to_an_image() {
+        // Cells copied in a spreadsheet: text, a table, and a picture of them.
+        let table = "<table><tr><td>Q3</td><td>1,200</td></tr></table>";
+        assert!(text_outranks_image("Q3\t1,200", Some(table)));
+        // A selection in a slide or note app: text and a bitmap, no markup.
+        assert!(text_outranks_image("Launch plan for Q3", None));
+
+        // A browser's "Copy image": the tag, with or without the address.
+        let img = r#"<meta charset="utf-8"><img src="https://example.com/a.png" alt="a > b">"#;
+        assert!(!text_outranks_image("https://example.com/a.png", Some(img)));
+        assert!(!text_outranks_image("a cat", Some(img)));
+        // An image with only its address or path as text.
+        assert!(!text_outranks_image("https://example.com/a.png", None));
+        assert!(!text_outranks_image("/Users/x/Screen Shot.png", None));
+        assert!(!text_outranks_image("C:\\Users\\x\\shot.png", None));
+        // No text at all.
+        assert!(!text_outranks_image("  \n", Some(table)));
+        assert!(!text_outranks_image("", None));
+    }
+
+    #[test]
+    fn html_visible_text() {
+        assert!(html_has_visible_text("<p>hi</p>"));
+        assert!(html_has_visible_text("<!--StartFragment--><b>x</b>"));
+        assert!(!html_has_visible_text("<img src='a.png'>"));
+        assert!(!html_has_visible_text("<span>&nbsp; &#160;</span>\n<br>"));
+        assert!(!html_has_visible_text(r#"<img alt="a > b" src="x">"#));
+        assert!(html_has_visible_text("<a title='its>x</a>"));
+
+        // An office app's document: the stylesheet and the title are not text.
+        let document = |body: &str| {
+            format!(
+                "<html><HEAD><title>Sheet1</title><style><!-- td {{color:red}} --></style>\
+                 </HEAD><body><!--[if gte mso 9]><xml>x</xml><![endif]-->{body}\
+                 <script>let a = 1 > 0;</script></body></html>"
+            )
+        };
+        assert!(html_has_visible_text(&document(
+            "<table><td>Q3</td></table>"
+        )));
+        assert!(!html_has_visible_text(&document(
+            "<![if !vml]><img src='a.png'><![endif]>"
+        )));
+        // Left open, an element or a comment takes the rest with it.
+        assert!(!html_has_visible_text("<style>p {color:red}"));
+        assert!(!html_has_visible_text("<!-- note"));
+        assert!(html_has_visible_text("<header>News</header>"));
     }
 
     #[test]

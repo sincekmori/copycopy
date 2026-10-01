@@ -84,6 +84,14 @@ pub enum Captured {
 
 `CaptureEvent` and `Captured` derive `serde::Serialize`/`Deserialize` with an internal `"kind"` tag, so you can forward an event to a webview or serialize it for IPC in one line.
 
+One copy puts several representations on the clipboard, and the crate delivers the one that was copied: files first, then text or an image, then rich text, then plain text.
+When text and an image arrive together, the text wins if it is real text and the image wins if the text only names it.
+Cells copied in a spreadsheet come with a picture of themselves, and it is the cells you get; a browser's "Copy image" comes with the image's address or an `<img>` tag, and it is the image you get.
+
+A copy that its source marked as a secret is never delivered — the handler is not called.
+Password managers flag what they copy: `org.nspasteboard.ConcealedType` on macOS, `ExcludeClipboardContentFromMonitorProcessing` (and `CanIncludeInClipboardHistory` / `CanUploadToCloudClipboard` set to 0) on Windows, `x-kde-passwordManagerHint` on Linux.
+For an app that does not flag its copies, use `denylist_exec_substrings` (see [Configuration](#configuration)).
+
 ## Where the processing goes
 
 The crate is agnostic — it only delivers the event.
@@ -185,7 +193,7 @@ Instead, the crate embeds a small GNOME Shell extension and installs it automati
 How it works:
 
 - The extension runs inside the compositor (the same vantage point clipboard managers like GPaste use). It watches clipboard **owner changes**, so the trigger is **two explicit copies within 400 ms** — which is exactly what Ctrl+C+C produces. A single copy never fires anything.
-- After the second copy it waits for the clipboard to settle, reads the content with the same priority as the other platforms (files > image > rich text > plain text), attaches the focused window's app name / `wm_class` / title / PID, and notifies the host app.
+- After the second copy it waits for the clipboard to settle, reads the content by the same rules as the other platforms (which representation was copied, and nothing its source marked as a secret), attaches the focused window's app name / `wm_class` / title / PID, and notifies the host app.
 - **Privacy**: clipboard contents are never broadcast on the D-Bus session bus. The extension only broadcasts a serial number; the content itself is fetched with a unicast method call, is handed out once, and expires after a few seconds.
 
 Things to know:
@@ -218,4 +226,4 @@ copycopy exists because the glue is the hard part: the double-tap state machine,
 - Audio and video arrive as file references (the `Files` variant), not as raw media.
 - The browser URL is chromium-only, and recent Chrome may need an accessibility helper.
 - The listener runs for the process lifetime, since rdev has no stop API.
-- Global key hooks are commonly flagged by EDR/AV as keyloggers, so code-sign for distribution; note the clipboard may hold secrets, which `denylist_exec_substrings` can exclude.
+- Global key hooks are commonly flagged by EDR/AV as keyloggers, so code-sign for distribution; the clipboard may hold secrets: copies flagged as such by their source app are skipped, and `denylist_exec_substrings` excludes apps that do not flag theirs.
