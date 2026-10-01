@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/sincekmori/copycopy/compare/v0.4.1...v0.4.2) - 2026-10-02
+
+### Fixed
+
+- a clipboard that offers what it will not hand over yet is read again instead of being taken for empty — on Windows and Linux a capture goes back to it for up to two seconds when another program has it open or a format it offers fails to read, which is the state a spreadsheet's cells leave it in right after the copy
+
 ## [0.4.1](https://github.com/sincekmori/copycopy/compare/v0.4.0...v0.4.1) - 2026-10-02
 
 ### Fixed
