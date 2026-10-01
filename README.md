@@ -88,8 +88,8 @@ One copy puts several representations on the clipboard, and the crate delivers t
 When text and an image arrive together, the text wins if it is real text and the image wins if the text only names it.
 Cells copied in a spreadsheet come with a picture of themselves, and it is the cells you get; a browser's "Copy image" comes with the image's address or an `<img>` tag, and it is the image you get.
 
-On Windows and Linux, a clipboard that offers what it will not hand over yet is read again, for up to two seconds, instead of being taken for empty.
-Right after a copy the source may still be rendering the formats it promised, and another listener — the system's clipboard history, a remote desktop — may be holding the clipboard open; a spreadsheet's cells are the usual case.
+On Windows and Linux, a clipboard that has nothing yet, or that offers what it will not hand over yet, is read again for up to two seconds instead of being taken for empty.
+A spreadsheet's cells are the usual case: Excel empties the clipboard at the second Ctrl+C and fills it again some fifty milliseconds later, and soon after another listener — the system's clipboard history, a remote desktop — holds it open to fetch what it wants.
 
 A copy that its source marked as a secret is never delivered — the handler is not called.
 Password managers flag what they copy: `org.nspasteboard.ConcealedType` on macOS, `ExcludeClipboardContentFromMonitorProcessing` (and `CanIncludeInClipboardHistory` / `CanUploadToCloudClipboard` set to 0) on Windows, `x-kde-passwordManagerHint` on Linux.

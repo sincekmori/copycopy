@@ -5,9 +5,11 @@
 //! - Files are delivered as normalized filesystem paths (read them downstream).
 //! - Audio/Video are not on the clipboard as media — only as file references.
 //! - A copy its source marked as a secret is not delivered at all.
-//! - A clipboard that offers what it will not hand over yet — another program
-//!   has it open, or its owner has still to render what it promised — is read
-//!   again until it does, for two seconds at most (Windows and Linux).
+//! - A clipboard with nothing in it yet, or one that offers what it will not
+//!   hand over yet — its owner has emptied it and is about to fill it again,
+//!   another program has it open, a promised format is still to be rendered —
+//!   is read again until it has something and hands it over, for two seconds
+//!   at most (Windows and Linux).
 //!
 //! On macOS the clipboard/window reads must run on the process main thread;
 //! [`capture_macos`] hops to the main thread via libdispatch while sleeping off it.
@@ -130,10 +132,10 @@ enum Read {
     Secret,
     /// The clipboard handed over all it offered.
     Whole(Captured),
-    /// The clipboard offered something it would not hand over just then:
-    /// another program had it open, or its owner had still to render what it
-    /// promised. The content is what the rest amounts to — another read may
-    /// find the whole.
+    /// There may be more to come: the clipboard held nothing at all (an
+    /// owner empties it before it fills it again), another program had it
+    /// open, or it would not hand over a format it offered. The content is
+    /// what could be read — another read may find the whole.
     Partial(Captured),
 }
 
@@ -148,17 +150,19 @@ impl Read {
     }
 }
 
-/// How long a capture goes back to a clipboard that offers what it will not
-/// hand over yet (see [`Read::Partial`]). A spreadsheet's cells are the case:
-/// the app promises some twenty formats and renders each on request, the
-/// system's clipboard history and every other listener ask for theirs at
-/// once, and for a moment after the copy the clipboard is open in their
-/// hands — where a single read finds nothing at all.
+/// How long a capture goes back to a clipboard that has nothing yet, or that
+/// offers what it will not hand over yet (see [`Read::Partial`]). A
+/// spreadsheet's cells are the case, measured in Excel on Windows: the second
+/// Ctrl+C first empties the clipboard — which is the change a capture wakes
+/// up on — and puts its thirty formats back some fifty milliseconds later;
+/// a little after that the system's clipboard history and other listeners
+/// open it to fetch theirs. A single read at the change finds nothing at
+/// all.
 #[cfg(not(target_os = "macos"))]
 const READ_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Read until the clipboard hands over all it offers; once `patience` is
-/// spent, what could be read has to do. `None` for a secret.
+/// Read until the clipboard hands over all it has; once `patience` is spent,
+/// what the last read found has to do. `None` for a secret.
 #[cfg(any(not(target_os = "macos"), test))]
 fn read_whole(
     mut read: impl FnMut() -> Read,
@@ -174,6 +178,23 @@ fn read_whole(
             last => return last.delivered(),
         }
     }
+}
+
+/// Whether the clipboard holds nothing at all right now, told without opening
+/// it: an owner that has just emptied it must not find it taken when it comes
+/// back to fill it.
+#[cfg(windows)]
+fn clipboard_is_bare() -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn CountClipboardFormats() -> i32;
+    }
+    unsafe { CountClipboardFormats() == 0 }
+}
+
+#[cfg(not(windows))]
+fn clipboard_is_bare() -> bool {
+    false
 }
 
 /// Whether another program has the clipboard open right now. Windows lets
@@ -228,6 +249,9 @@ fn fetched<T>(
 /// Priority: files > text, when text is what was copied (see
 /// [`text_outranks_image`]) > image > rich text > plain text.
 fn read_clipboard(max_files: usize) -> Read {
+    if clipboard_is_bare() {
+        return Read::Partial(Captured::Empty);
+    }
     if clipboard_held_elsewhere() {
         return Read::Partial(Captured::Empty);
     }
@@ -813,15 +837,22 @@ mod tests {
         let step = Duration::from_millis(1);
         let patient = Duration::from_secs(5);
 
-        // The clipboard is busy twice, then hands over the whole.
+        // The clipboard is bare, then busy, then hands over the whole.
         let mut reads = vec![
             Read::Whole(text("whole")),
-            Read::Partial(Captured::Empty),
             Read::Partial(text("part")),
+            Read::Partial(Captured::Empty),
+            Read::Partial(Captured::Empty),
         ];
-        let got = read_whole(|| reads.pop().expect("a fourth read"), patient, step);
+        let got = read_whole(|| reads.pop().expect("a fifth read"), patient, step);
         assert!(says(got, "whole"));
         assert!(reads.is_empty());
+
+        // A clipboard read whole and found empty is not gone back to.
+        let mut reads = vec![Read::Whole(text("later")), Read::Whole(Captured::Empty)];
+        let got = read_whole(|| reads.pop().expect("a third read"), patient, step);
+        assert!(matches!(got, Some(Captured::Empty)));
+        assert_eq!(reads.len(), 1);
 
         // Patience spent: what could be read has to do.
         let got = read_whole(|| Read::Partial(text("part")), Duration::ZERO, step);
