@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/sincekmori/copycopy/compare/v0.3.6...v0.4.0) - 2026-10-01
+
+### Added
+
+- skip copies their source marked as a secret and deliver the text when an app puts a picture of it on the clipboard too
+
+### Fixed
+
+- keep a % in a file name when the clipboard hands back a path, percent-decoding only file:// URLs
+
+### Other
+
+- update the README dependency snippet from 0.3 to 0.4
+
 ## [0.3.6](https://github.com/sincekmori/copycopy/compare/v0.3.5...v0.3.6) - 2026-09-04
 
 ### Other
