@@ -17,6 +17,16 @@ ignore = [
     # path until xcb moves off quick-xml 0.30. Revisit on xcb releases.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # zbus 5 ships its D-Bus wire format as the separate zvariant,
+    # zvariant_derive and zbus_names crates; zbus 6.0.0 (2026-10-16) folded
+    # them back in, so the standalone crates were marked unmaintained.
+    # Informational only, no vulnerability. They stay in the tree through
+    # zbus 5, which we pin and which x-win 5.8.0 still requires (zbus ^5.18).
+    # Revisit when x-win depends on zbus 6: migrate src/gnome/ (blocking
+    # Connection/Proxy) to zbus 6 and drop these three entries.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 [licenses]
