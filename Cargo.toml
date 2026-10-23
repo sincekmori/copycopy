@@ -9,10 +9,11 @@ readme = "README.md"
 repository = "https://github.com/sincekmori/copycopy"
 keywords = ["clipboard", "hotkey", "wayland", "gnome", "tauri"]
 categories = ["os", "os::macos-apis", "os::linux-apis", "os::windows-apis", "api-bindings"]
-# Keep CI configuration out of the published crate. release-plz compares the
-# packaged files against the registry, so shipping .github/ would turn every
-# CI-config change (typos bumps, dependabot.yml) into a release.
-exclude = ["/.github"]
+# Keep repository tooling out of the published crate. release-plz compares the
+# packaged files against the registry, so shipping CI and tool configuration
+# would turn every edit to them (typos bumps, dependabot.yml, deny.toml) into
+# a release.
+exclude = ["/.github", "/deny.toml", "/release-plz.toml"]
 
 [lints.rust]
 missing_docs = "warn"
