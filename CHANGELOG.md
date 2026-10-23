@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/sincekmori/copycopy/compare/v0.4.3...v0.4.4) - 2026-10-23
+
+### Other
+
+- exclude deny.toml and release-plz.toml from the published crate so tool-config edits no longer trigger releases
+- ignore the zbus 5 unmaintained advisories RUSTSEC-2026-0370, 0371 and 0372 until x-win moves to zbus 6
+
 ## [0.4.3](https://github.com/sincekmori/copycopy/compare/v0.4.2...v0.4.3) - 2026-10-02
 
 ### Fixed
