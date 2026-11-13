@@ -4,11 +4,12 @@
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum CState {
     Idle,
-    /// First C is down (waiting for its release). We stay here through OS
-    /// auto-repeat key-down events, which is how auto-repeat is told apart
-    /// from a genuine second tap.
-    FirstDown,
-    FirstReleased,
+    /// First C is down since this time (waiting for its release). We stay
+    /// here through OS auto-repeat key-down events, which is how auto-repeat
+    /// is told apart from a genuine second tap.
+    FirstDown(u64),
+    /// First C went down at this time and has been released.
+    FirstReleased(u64),
 }
 
 /// Detects `Press → Release → Press` of `C` within `window_ms`, while the trigger
@@ -17,7 +18,6 @@ pub struct DoubleTap {
     window_ms: u64,
     modifier_down: bool,
     c_state: CState,
-    first_press_at_ms: Option<u64>,
 }
 
 impl DoubleTap {
@@ -26,13 +26,11 @@ impl DoubleTap {
             window_ms,
             modifier_down: false,
             c_state: CState::Idle,
-            first_press_at_ms: None,
         }
     }
 
     fn reset(&mut self) {
         self.c_state = CState::Idle;
-        self.first_press_at_ms = None;
     }
 
     /// Update whether the trigger modifier is held. Releasing it resets the
@@ -55,33 +53,23 @@ impl DoubleTap {
             return false;
         }
         match self.c_state {
-            CState::Idle => {
-                self.c_state = CState::FirstDown;
-                self.first_press_at_ms = Some(now_ms);
-                false
+            CState::FirstDown(_) => false, // press w/o release ⇒ auto-repeat: ignore
+            CState::FirstReleased(first) if now_ms.saturating_sub(first) <= self.window_ms => {
+                self.reset();
+                true
             }
-            CState::FirstDown => false, // press w/o release ⇒ auto-repeat: ignore
-            CState::FirstReleased => {
-                let within = self
-                    .first_press_at_ms
-                    .map(|t| now_ms.saturating_sub(t) <= self.window_ms)
-                    .unwrap_or(false);
-                if within {
-                    self.reset();
-                    true
-                } else {
-                    self.c_state = CState::FirstDown;
-                    self.first_press_at_ms = Some(now_ms);
-                    false
-                }
+            // The first press, or one too late to be the second: it starts over.
+            CState::Idle | CState::FirstReleased(_) => {
+                self.c_state = CState::FirstDown(now_ms);
+                false
             }
         }
     }
 
     /// Feed a `C` key-up.
     pub fn on_c_up(&mut self) {
-        if self.c_state == CState::FirstDown {
-            self.c_state = CState::FirstReleased;
+        if let CState::FirstDown(at) = self.c_state {
+            self.c_state = CState::FirstReleased(at);
         }
     }
 }
