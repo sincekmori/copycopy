@@ -44,14 +44,17 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # Bans, licenses and sources are what a pull request can break. Advisories
+  # change with the outside world rather than with the diff, so they are
+  # checked on a schedule instead (see advisories.yml).
   deny:
-    name: cargo-deny
+    name: cargo-deny (bans licenses sources)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check
+          command: check bans licenses sources
 
   typos:
     name: typos
