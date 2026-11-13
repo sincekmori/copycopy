@@ -30,11 +30,13 @@ Please make sure the checks CI runs on a pull request pass locally.
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo deny check bans licenses sources    # cargo install cargo-deny
 typos                                     # cargo install typos-cli
 ```
 
-Advisories and yanked crates (`cargo deny check advisories`) are checked on `main` on a daily schedule instead, so a new one never fails a pull request that has nothing to do with it.
+Advisories and yanked crates are not checked on pull requests: the `advisories` workflow checks them on `main`.
+To check a branch before it is merged, run that workflow on it with `gh workflow run advisories.yml --ref <branch>`.
 
 ## Commit messages
 

@@ -1,8 +1,10 @@
-# Release-age cooldown for this repository's own dependency resolution: cargo
-# only picks a version once it has been public for this long, unless it is
-# already in Cargo.lock. The policy is each tool's own default, and one day
-# where a tool defines none. Cargo defines none (its default is "0"), so this
-# is one day. Respected as of Cargo 1.100.
+# Release-age policy: each tool's own default, and one day where a tool defines
+# none. Cargo defines none (its default is "0"), so this is one day.
+#
+# It is the floor for every version that enters Cargo.lock: cargo only picks a
+# version once it has been public for this long, unless it is already locked.
+# Respected as of Cargo 1.100, so also by the cargo that Dependabot's updater
+# runs once that is on 1.100.
 #
 # For a fix that cannot wait:
 #   CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update -p <crate> --precise <version>
