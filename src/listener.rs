@@ -85,9 +85,14 @@ fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::S
     // an immediate error is then corrected by the Failed report (latest wins).
     status(crate::TriggerStatus::Listening);
     if let Err(e) = listen(callback) {
-        eprintln!("[copycopy] rdev::listen failed: {e:?}");
-        status(crate::TriggerStatus::Failed {
-            message: format!("rdev::listen failed: {e:?}"),
-        });
+        report_failed(&status, format!("rdev::listen failed: {e:?}"));
     }
+}
+
+/// Reports that the listener could not start or died: on stderr, and as a
+/// [`TriggerStatus::Failed`](crate::TriggerStatus::Failed) with the same
+/// message.
+pub(crate) fn report_failed(status: &crate::StatusHandler, message: String) {
+    eprintln!("[copycopy] {message}");
+    status(crate::TriggerStatus::Failed { message });
 }

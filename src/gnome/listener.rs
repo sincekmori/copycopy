@@ -10,6 +10,7 @@ use crate::capture::{Foreground, build_event, html_is_meaningfully_rich, should_
 use crate::config::Config;
 use crate::event::{Captured, RichFormat};
 use crate::gnome::installer::{self, InstallState};
+use crate::listener::report_failed;
 
 const BUS_NAME: &str = "org.gnome.Shell";
 const OBJECT_PATH: &str = "/io/github/sincekmori/copycopy";
@@ -33,19 +34,16 @@ pub(crate) fn start_listener(
         }
         Ok(InstallState::UpToDate) => {}
         Err(e) => {
-            eprintln!("[copycopy] failed to install the GNOME Shell extension: {e}");
-            status(crate::TriggerStatus::Failed {
-                message: format!("failed to install the GNOME Shell extension: {e}"),
-            });
+            report_failed(
+                &status,
+                format!("failed to install the GNOME Shell extension: {e}"),
+            );
             return;
         }
     }
 
     if let Err(e) = run(&config, &handler, &status) {
-        eprintln!("[copycopy] GNOME Wayland D-Bus listener failed: {e}");
-        status(crate::TriggerStatus::Failed {
-            message: format!("GNOME Wayland D-Bus listener failed: {e}"),
-        });
+        report_failed(&status, format!("GNOME Wayland D-Bus listener failed: {e}"));
     }
 }
 
@@ -96,36 +94,36 @@ fn run(
                 continue;
             }
         };
-        let (kind, mime, data, plain, app_name, wm_class, title, pid) = reply;
-        if kind == "expired" {
-            continue; // someone raced us to it, or we were too slow
-        }
-
-        let fg = Foreground {
-            app_name,
-            exec_name: wm_class,
-            exec_path: String::new(),
-            window_title: title,
-            process_id: pid,
-            url: None,
-        };
-        if should_skip(&fg, &config.denylist_exec_substrings) {
-            continue;
-        }
-        // The handler is called on this thread, so a capture that panics has
-        // to be stopped here for the loop to go on to the next one.
-        contained(|| {
-            let content = convert(&kind, &mime, data, plain, config.max_files);
-            handler(build_event(fg, content));
-        });
+        deliver(reply, config, handler);
     }
     Ok(())
 }
 
-/// Runs one capture and keeps a panic in it from unwinding any further: that
-/// capture is lost, the listener is not.
-fn contained(capture: impl FnOnce()) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(capture));
+/// Hands one `TakeCapture` reply to the handler, unless it has expired or its
+/// app is denylisted.
+fn deliver(reply: TakeCaptureReply, config: &Config, handler: &CaptureHandler) {
+    let (kind, mime, data, plain, app_name, wm_class, title, pid) = reply;
+    if kind == "expired" {
+        return; // someone raced us to it, or we were too slow
+    }
+
+    let fg = Foreground {
+        app_name,
+        exec_name: wm_class,
+        exec_path: String::new(),
+        window_title: title,
+        process_id: pid,
+        url: None,
+    };
+    if should_skip(&fg, &config.denylist_exec_substrings) {
+        return;
+    }
+    // The handler is called on the listener's own thread here, so a capture
+    // that panics is stopped on the spot: it is lost, the listener is not.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let content = convert(&kind, &mime, data, plain, config.max_files);
+        handler(build_event(fg, content));
+    }));
 }
 
 /// Map an extension payload onto [`Captured`], mirroring the priority and
@@ -209,14 +207,52 @@ fn parse_uri_list(text: &str, gnome_copied_files: bool, max_files: usize) -> Vec
 mod tests {
     use super::*;
 
+    use std::sync::{Arc, Mutex};
+
+    use crate::event::CaptureEvent;
+
+    /// A `TakeCapture` reply of `kind`, from an app that is not this process.
+    fn reply(kind: &str, data: &[u8]) -> TakeCaptureReply {
+        (
+            kind.to_string(),
+            "text/plain;charset=utf-8".to_string(),
+            data.to_vec(),
+            String::new(),
+            "App".to_string(),
+            "app".to_string(),
+            "Title".to_string(),
+            0,
+        )
+    }
+
     #[test]
-    fn a_capture_that_panics_does_not_end_the_listener() {
-        contained(|| {
-            // Unwinds as a panicking handler does, without the panic hook's
-            // report in the test output.
-            std::panic::resume_unwind(Box::new("the handler panicked"));
+    fn a_reply_reaches_the_handler_unless_it_expired() {
+        let seen: Arc<Mutex<Vec<CaptureEvent>>> = Arc::default();
+        let sink = Arc::clone(&seen);
+        let handler: CaptureHandler = Arc::new(move |event: CaptureEvent| {
+            sink.lock().unwrap().push(event);
         });
-        // Getting here is the assertion: the unwind stopped in `contained`.
+
+        deliver(reply("expired", b""), &Config::default(), &handler);
+        deliver(reply("text", b"hi"), &Config::default(), &handler);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].app_name, "App");
+        assert!(matches!(&seen[0].content, Captured::Text { text } if text.as_str() == "hi"));
+    }
+
+    #[test]
+    fn a_handler_that_panics_does_not_end_the_listener() {
+        fn panics(_: CaptureEvent) {
+            // Unwinds as a panic does, without the panic hook's report in the
+            // test output.
+            std::panic::resume_unwind(Box::new("the handler panicked"));
+        }
+        let handler: CaptureHandler = Arc::new(panics);
+
+        deliver(reply("text", b"hi"), &Config::default(), &handler);
+        // Getting here is the assertion: the unwind stopped in `deliver`.
     }
 
     fn png_with(width: u32, height: u32) -> Vec<u8> {
