@@ -15,7 +15,7 @@ use objc2_core_graphics::{
     CGEventTapPlacement, CGEventTapProxy, CGEventType,
 };
 
-use crate::capture::{capture_macos, clipboard_change_count};
+use crate::capture::fire_if_allowed;
 use crate::config::Config;
 use crate::detector::DoubleTap;
 use crate::gate::CaptureGate;
@@ -29,34 +29,12 @@ struct TapState {
     config: Config,
     handler: CaptureHandler,
     detector: RefCell<DoubleTap>,
-    last_trigger: RefCell<Option<Instant>>,
     gate: CaptureGate,
     base: Instant,
     /// The tap's mach port (as a raw pointer value) so the callback can
     /// re-enable the tap if macOS disables it. Valid for the program's life
     /// because [`install`] leaks the port.
     port: OnceLock<usize>,
-}
-
-fn fire_if_allowed(state: &TapState) {
-    let cooled = state
-        .last_trigger
-        .borrow()
-        .map(|t| t.elapsed() >= state.config.trigger_cooldown)
-        .unwrap_or(true);
-    if !cooled {
-        return;
-    }
-    let Some(in_flight) = state.gate.claim() else {
-        return;
-    };
-    *state.last_trigger.borrow_mut() = Some(Instant::now());
-
-    // Keep the tap callback fast: snapshot only the cheap change counter here.
-    let baseline = clipboard_change_count();
-    let config = state.config.clone();
-    let handler = state.handler.clone();
-    in_flight.run(move || capture_macos(config, handler, baseline));
 }
 
 unsafe extern "C-unwind" fn tap_callback(
@@ -99,7 +77,7 @@ unsafe extern "C-unwind" fn tap_callback(
                 det.on_c_down(now_ms, autorepeat)
             };
             if triggered {
-                fire_if_allowed(state);
+                fire_if_allowed(&state.config, &state.handler, &state.gate);
             }
         } else {
             state.detector.borrow_mut().on_c_up();
@@ -113,12 +91,12 @@ unsafe extern "C-unwind" fn tap_callback(
 /// on the main thread (e.g. from the host's startup hook / `main`).
 pub fn install(config: Config, handler: CaptureHandler) -> Result<(), Error> {
     let double_tap_window = config.double_tap_window.as_millis() as u64;
+    let gate = CaptureGate::new(config.trigger_cooldown);
     let state: &'static TapState = Box::leak(Box::new(TapState {
         config,
         handler,
         detector: RefCell::new(DoubleTap::new(double_tap_window)),
-        last_trigger: RefCell::new(None),
-        gate: CaptureGate::default(),
+        gate,
         base: Instant::now(),
         port: OnceLock::new(),
     }));

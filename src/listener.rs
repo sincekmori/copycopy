@@ -9,12 +9,12 @@
 //! Wayland), other Wayland compositors are reported as unsupported, and X11
 //! falls through to the rdev path.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rdev::{Event, EventType, Key, listen};
 
 use crate::CaptureHandler;
-use crate::capture::{clipboard_change_count, run_capture};
+use crate::capture::fire_if_allowed;
 use crate::config::Config;
 use crate::detector::DoubleTap;
 use crate::gate::CaptureGate;
@@ -51,10 +51,8 @@ pub fn start_listener(config: Config, handler: CaptureHandler, status: crate::St
 /// Blocking rdev key listener (Windows, and Linux on X11).
 fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::StatusHandler) {
     let mut detector = DoubleTap::new(config.double_tap_window.as_millis() as u64);
-    let mut last_trigger: Option<Instant> = None;
-    let gate = CaptureGate::default();
+    let gate = CaptureGate::new(config.trigger_cooldown);
     let base = Instant::now();
-    let cooldown = config.trigger_cooldown;
 
     let callback = move |event: Event| {
         // Never let a panic unwind across rdev's C callback boundary (UB).
@@ -67,7 +65,7 @@ fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::S
                     } else if key == Key::KeyC {
                         let now_ms = base.elapsed().as_millis() as u64;
                         if detector.on_c_down(now_ms, false) {
-                            fire_if_allowed(&config, &handler, &gate, &mut last_trigger, cooldown);
+                            fire_if_allowed(&config, &handler, &gate);
                         }
                     }
                 }
@@ -92,29 +90,4 @@ fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::S
             message: format!("rdev::listen failed: {e:?}"),
         });
     }
-}
-
-/// Cooldown + single-in-flight gate, then run the capture on a worker thread.
-fn fire_if_allowed(
-    config: &Config,
-    handler: &CaptureHandler,
-    gate: &CaptureGate,
-    last_trigger: &mut Option<Instant>,
-    cooldown: Duration,
-) {
-    let cooled = last_trigger
-        .map(|t| t.elapsed() >= cooldown)
-        .unwrap_or(true);
-    if !cooled {
-        return;
-    }
-    let Some(in_flight) = gate.claim() else {
-        return;
-    };
-    *last_trigger = Some(Instant::now());
-
-    let baseline = clipboard_change_count();
-    let config = config.clone();
-    let handler = handler.clone();
-    in_flight.run(move || run_capture(&config, &handler, baseline));
 }
