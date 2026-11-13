@@ -208,6 +208,7 @@ Things to know:
 - **Supported GNOME versions: 45–50 declared, verified on GNOME 46.** GNOME's `shell-version` metadata has no range syntax — each major must be listed explicitly, or the extension is disabled at login on that version. GNOME releases a new major every March and September; each release gets the new major appended and a patch release of this crate, and the auto-installer upgrades existing installs by version comparison, so staying current only takes a `cargo update`. (GNOME 44 and older are out: they use a different, pre-ESM extension entry point.)
 - **Screenshots don't trigger.** GNOME's PrtSc writes the clipboard once, and one clipboard write is a single copy by definition. The macOS-style "screenshot, then Ctrl+C+C to grab it" flow is out of scope on this backend — copy an image from an app (two Ctrl+C presses) instead.
 - `CaptureEvent.exec_path` is empty and `url` is `None` on this backend; `exec_name` carries the window's `wm_class`.
+- **A double-copy made while your handler is still running waits its turn** instead of being dropped as on the other platforms, because the handler is called on the listener's thread here. It is lost if it has waited more than five seconds, which is how long the extension keeps a capture.
 
 ## Related crates
 
