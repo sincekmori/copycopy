@@ -24,15 +24,17 @@ When a new GNOME major is released (every March and September), append it to `sh
 
 ## Before opening a PR
 
-Please make sure the checks CI runs pass locally.
+Please make sure the checks CI runs on a pull request pass locally.
 
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo deny check    # cargo install cargo-deny
-typos               # cargo install typos-cli
+cargo deny check bans licenses sources    # cargo install cargo-deny
+typos                                     # cargo install typos-cli
 ```
+
+Advisories and yanked crates (`cargo deny check advisories`) are checked on `main` on a daily schedule instead, so a new one never fails a pull request that has nothing to do with it.
 
 ## Commit messages
 
