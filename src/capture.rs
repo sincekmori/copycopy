@@ -14,6 +14,7 @@
 //! On macOS the clipboard/window reads must run on the process main thread;
 //! [`run_capture`] hops to the main thread via libdispatch while sleeping off it.
 
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -251,6 +252,12 @@ fn fetched<T>(
     read.ok()
 }
 
+/// The clipboard context every read goes through, made by the first read
+/// and kept. On X11 clipboard-rs opens two connections to the server and
+/// starts a thread for each context, and has nothing that gives them back, so
+/// a context per read would leave those behind with every capture.
+static CONTEXT: Mutex<Option<ClipboardContext>> = Mutex::new(None);
+
 /// One clipboard read.
 ///
 /// Priority: files > text, when text is what was copied (see
@@ -262,7 +269,14 @@ fn read_clipboard(max_files: usize) -> Read {
     if clipboard_held_elsewhere() {
         return Read::Partial(Captured::Empty);
     }
-    let Ok(ctx) = ClipboardContext::new() else {
+    // A read that panicked with the lock held is no reason to refuse every
+    // read after it, and a context that could not be made is not kept: the
+    // next read tries again.
+    let mut context = CONTEXT.lock().unwrap_or_else(PoisonError::into_inner);
+    if context.is_none() {
+        *context = ClipboardContext::new().ok();
+    }
+    let Some(ctx) = context.as_ref() else {
         return Read::Whole(Captured::Empty);
     };
     // The list of formats is where a secret is marked: content that offers
@@ -271,12 +285,12 @@ fn read_clipboard(max_files: usize) -> Read {
     if formats.is_empty() && READ_FORMATS.into_iter().any(|format| ctx.has(format)) {
         return Read::Partial(Captured::Empty);
     }
-    if is_concealed(&ctx, &formats) {
+    if is_concealed(ctx, &formats) {
         return Read::Secret;
     }
 
     let mut unread = false;
-    let content = read_content(&ctx, max_files, &mut unread);
+    let content = read_content(ctx, max_files, &mut unread);
     if unread {
         Read::Partial(content)
     } else {
