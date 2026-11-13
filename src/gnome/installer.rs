@@ -215,35 +215,35 @@ fn update_extension_list(
     key: &str,
     update: impl FnOnce(Vec<String>) -> Option<Vec<String>>,
 ) -> Result<(), String> {
-    const SCHEMA: &str = "org.gnome.shell";
-
-    let out = Command::new("gsettings")
-        .args(["get", SCHEMA, key])
-        .output()
-        .map_err(|e| format!("cannot run gsettings: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "`gsettings get {SCHEMA} {key}` failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-
-    let current = String::from_utf8_lossy(&out.stdout);
+    let current = gsettings("get", key, None)?;
     let Some(next) = update(parse_gvariant_string_array(&current)) else {
         return Ok(());
     };
+    gsettings(
+        "set",
+        key,
+        Some(format_gvariant_string_array(&next).as_str()),
+    )?;
+    Ok(())
+}
+
+/// Runs `gsettings <verb> org.gnome.shell <key> [value]` and returns what it
+/// printed.
+fn gsettings(verb: &str, key: &str, value: Option<&str>) -> Result<String, String> {
+    const SCHEMA: &str = "org.gnome.shell";
 
     let out = Command::new("gsettings")
-        .args(["set", SCHEMA, key, &format_gvariant_string_array(&next)])
+        .args([verb, SCHEMA, key])
+        .args(value)
         .output()
         .map_err(|e| format!("cannot run gsettings: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "`gsettings set {SCHEMA} {key}` failed: {}",
+            "`gsettings {verb} {SCHEMA} {key}` failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Parse gsettings' text form of an `as` value: `['a', 'b']`, `[]`, `@as []`.

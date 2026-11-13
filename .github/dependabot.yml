@@ -1,7 +1,11 @@
 version: 2
-# Release-age policy: each tool's own default, and one day where a tool
-# defines none. Dependabot defines one (3 days when this was written), so
-# there is no `cooldown` here; cargo defines none, see .cargo/config.toml.
+# No `cooldown`: Dependabot's own default applies (the release-age policy is in
+# .cargo/config.toml). It delays what Dependabot proposes, not what cargo then
+# locks: for a transitive dependency cargo picks the version, and the floor in
+# .cargo/config.toml only binds a cargo from 1.100 on. Until Dependabot's
+# updater runs one (the `rust:` image in cargo/Dockerfile of
+# dependabot/dependabot-core), check the publish dates in a cargo pull
+# request's Cargo.lock diff before merging it.
 updates:
   - package-ecosystem: cargo
     directory: "/"
@@ -12,7 +16,6 @@ updates:
     # a yank or an advisory turns up in it.
     allow:
       - dependency-type: all
-    open-pull-requests-limit: 5
     groups:
       cargo:
         patterns: ["*"]

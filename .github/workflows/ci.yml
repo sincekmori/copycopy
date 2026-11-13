@@ -44,9 +44,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # Bans, licenses and sources are what a pull request can break. Advisories
-  # change with the outside world rather than with the diff, so they are
-  # checked on a schedule instead (see advisories.yml).
+  # What a pull request can break. Advisories are checked in advisories.yml.
   deny:
     name: cargo-deny (bans licenses sources)
     runs-on: ubuntu-latest

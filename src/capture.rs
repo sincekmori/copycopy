@@ -12,7 +12,7 @@
 //!   at most (Windows and Linux).
 //!
 //! On macOS the clipboard/window reads must run on the process main thread;
-//! [`capture_macos`] hops to the main thread via libdispatch while sleeping off it.
+//! [`run_capture`] hops to the main thread via libdispatch while sleeping off it.
 
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,6 +23,7 @@ use clipboard_rs::{Clipboard, ClipboardContext, ContentFormat};
 use crate::CaptureHandler;
 use crate::config::Config;
 use crate::event::{CaptureEvent, Captured, RichFormat};
+use crate::gate::CaptureGate;
 
 /// Foreground application context captured alongside the clipboard. Defaults to
 /// all-empty, which is used when the active window cannot be read. Fields are
@@ -37,6 +38,22 @@ pub(crate) struct Foreground {
     pub(crate) url: Option<String>,
 }
 
+impl Foreground {
+    /// The snapshot of a window x-win read, with its browser URL where one
+    /// can be had.
+    fn of(info: x_win::WindowInfo) -> Self {
+        let url = browser_url(&info);
+        Self {
+            app_name: info.info.name,
+            exec_name: info.info.exec_name,
+            exec_path: info.info.path,
+            window_title: info.title,
+            process_id: info.info.process_id,
+            url,
+        }
+    }
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -49,7 +66,7 @@ fn now_millis() -> u64 {
 /// Monotonic counter the OS bumps on every clipboard write. On failure returns 0,
 /// which only makes the wait fall back to its timeout (never incorrect).
 #[cfg(windows)]
-pub(crate) fn clipboard_change_count() -> u64 {
+fn clipboard_change_count() -> u64 {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn GetClipboardSequenceNumber() -> u32;
@@ -58,13 +75,13 @@ pub(crate) fn clipboard_change_count() -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn clipboard_change_count() -> u64 {
+fn clipboard_change_count() -> u64 {
     // [[NSPasteboard generalPasteboard] changeCount]
     objc2_app_kit::NSPasteboard::generalPasteboard().changeCount() as u64
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub(crate) fn clipboard_change_count() -> u64 {
+fn clipboard_change_count() -> u64 {
     0
 }
 
@@ -85,22 +102,12 @@ fn browser_url(info: &x_win::WindowInfo) -> Option<String> {
 }
 
 /// Windows/Linux: read window + browser URL together (any thread). macOS splits
-/// this (see [`capture_macos`] / [`snapshot_with_url`]) to keep the slow URL
-/// lookup off the main thread.
+/// this (see its [`run_capture`]) to keep the slow URL lookup off the main
+/// thread.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn read_active_window() -> Foreground {
+fn read_active_window() -> Foreground {
     match x_win::get_active_window() {
-        Ok(info) => {
-            let url = browser_url(&info);
-            Foreground {
-                app_name: info.info.name,
-                exec_name: info.info.exec_name,
-                exec_path: info.info.path,
-                window_title: info.title,
-                process_id: info.info.process_id,
-                url,
-            }
-        }
+        Ok(info) => Foreground::of(info),
         Err(e) => {
             eprintln!("[copycopy] get_active_window failed: {e:?}");
             Foreground::default()
@@ -579,12 +586,27 @@ fn poll_step_count(config: &Config) -> u128 {
         .max(1)
 }
 
+/// Fires a capture for a trigger, if the gate lets it through: the capture
+/// runs on a worker thread and holds the gate until it ends. Called from the
+/// key listener's callback, which has to stay fast, so the only thing done
+/// here is the snapshot of the cheap change counter — taken now, before the
+/// copy lands.
+pub(crate) fn fire_if_allowed(config: &Config, handler: &CaptureHandler, gate: &CaptureGate) {
+    let Some(in_flight) = gate.claim() else {
+        return;
+    };
+    let baseline = clipboard_change_count();
+    let config = config.clone();
+    let handler = handler.clone();
+    in_flight.run(move || run_capture(&config, &handler, baseline));
+}
+
 // ----------------------------- Windows / Linux -----------------------------
 
 /// Runs on a worker thread. Reads the window, waits for the clipboard to change
 /// (vs `baseline`), reads it, and hands the event to the handler.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn run_capture(config: &Config, handler: &CaptureHandler, baseline: u64) {
+fn run_capture(config: &Config, handler: &CaptureHandler, baseline: u64) {
     let fg = read_active_window();
     if should_skip(&fg, &config.denylist_exec_substrings) {
         return;
@@ -610,8 +632,7 @@ fn wait_for_change_then_read(config: &Config, baseline: u64) -> Option<Captured>
 // --------------------------------- macOS -----------------------------------
 
 /// Run `f` on the process main thread and return its result, via libdispatch's
-/// main queue. Must be called from a non-main thread while the host runs the main
-/// run loop (which drains the main queue).
+/// main queue, which the host's main run loop has to be draining.
 ///
 /// A panic in `f` is caught on the main thread and carried on here, in the
 /// calling thread: libdispatch calls `f` through a frame a panic cannot unwind
@@ -622,29 +643,25 @@ where
     F: FnOnce() -> T + Send,
     T: Send,
 {
-    let mut result = None;
-    dispatch2::DispatchQueue::main().exec_sync(|| {
-        result = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)));
-    });
-    match result.expect("main-thread closure produced a result") {
-        Ok(value) => value,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
+    dispatch2::run_on_main(|_| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)))
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// Runs on a worker thread. Window via main hop (URL lookup off main), then poll
 /// the clipboard change counter (reads on main, sleeps off it), then hand the
 /// event to the handler.
 #[cfg(target_os = "macos")]
-pub(crate) fn capture_macos(config: Config, handler: CaptureHandler, baseline: u64) {
+fn run_capture(config: &Config, handler: &CaptureHandler, baseline: u64) {
     let info = run_on_main(|| x_win::get_active_window().ok());
-    let fg = snapshot_with_url(info);
+    // Built here, off the main thread: the URL lookup spawns osascript, which
+    // is slow but not main-thread-bound.
+    let fg = info.map(Foreground::of).unwrap_or_default();
     if should_skip(&fg, &config.denylist_exec_substrings) {
         return;
     }
 
     let step = config.clipboard_poll_step;
-    let steps = poll_step_count(&config);
+    let steps = poll_step_count(config);
     let max_files = config.max_files;
     let mut read: Option<Option<Captured>> = None;
     for _ in 0..steps {
@@ -662,26 +679,6 @@ pub(crate) fn capture_macos(config: Config, handler: CaptureHandler, baseline: u
     // A secret is not delivered at all, like a denylisted app.
     if let Some(content) = content {
         handler(build_event(fg, content));
-    }
-}
-
-/// Build the foreground snapshot OFF the main thread: `get_browser_url` spawns
-/// osascript, slow but not main-thread-bound.
-#[cfg(target_os = "macos")]
-fn snapshot_with_url(info: Option<x_win::WindowInfo>) -> Foreground {
-    match info {
-        Some(i) => {
-            let url = browser_url(&i);
-            Foreground {
-                app_name: i.info.name,
-                exec_name: i.info.exec_name,
-                exec_path: i.info.path,
-                window_title: i.title,
-                process_id: i.info.process_id,
-                url,
-            }
-        }
-        None => Foreground::default(),
     }
 }
 
