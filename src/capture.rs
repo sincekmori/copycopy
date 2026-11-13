@@ -612,6 +612,10 @@ fn wait_for_change_then_read(config: &Config, baseline: u64) -> Option<Captured>
 /// Run `f` on the process main thread and return its result, via libdispatch's
 /// main queue. Must be called from a non-main thread while the host runs the main
 /// run loop (which drains the main queue).
+///
+/// A panic in `f` is caught on the main thread and carried on here, in the
+/// calling thread: libdispatch calls `f` through a frame a panic cannot unwind
+/// across, where it would abort the host process instead of ending one capture.
 #[cfg(target_os = "macos")]
 fn run_on_main<T, F>(f: F) -> T
 where
@@ -619,8 +623,13 @@ where
     T: Send,
 {
     let mut result = None;
-    dispatch2::DispatchQueue::main().exec_sync(|| result = Some(f()));
-    result.expect("main-thread closure produced a result")
+    dispatch2::DispatchQueue::main().exec_sync(|| {
+        result = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)));
+    });
+    match result.expect("main-thread closure produced a result") {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// Runs on a worker thread. Window via main hop (URL lookup off main), then poll
