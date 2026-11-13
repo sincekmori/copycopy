@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5](https://github.com/sincekmori/copycopy/compare/v0.4.4...v0.4.5) - 2026-11-13
+
+### Fixed
+
+- a listener thread that a panic ends reports TriggerStatus::Failed with the panic's message instead of leaving the trigger dead in silence
+- one clipboard context serves every read instead of a new one per read, which on X11 left two connections to the server and a thread behind with every capture
+- a panic while reading on the macOS main thread ends that one capture instead of aborting the host process, by being caught before it unwinds into libdispatch and carried on in the capture's worker thread
+- a capture that panics no longer silences the trigger for good, now that the in-flight gate is given back when the capture's worker thread unwinds and the GNOME Wayland listener outlives a handler that panics
+
+### Other
+
+- say that on GNOME Wayland a double-copy made while the handler is still running waits its turn instead of being dropped
+- keep dotfiles and the contributor guide out of the published crate, so that editing them is not a package change
+- the GNOME listener hands each reply to the handler in a function of its own, listeners report a failure through one helper, and one function runs gsettings
+- the double-tap state carries the time of its first press instead of keeping it in a second field
+- the trigger cooldown lives in the capture gate, both key listeners fire a capture through one function, the macOS main-thread hop goes through dispatch2's run_on_main, and the foreground snapshot is built in one place
+- hold cargo's resolver to versions that have been public for one day, with the minimum publish age Cargo 1.100 introduces, and keep that config file out of the published crate
+- tell contributors that pull requests are checked with cargo-deny's bans, licenses and sources, and that advisories are checked on main on a schedule
+
 ## [0.4.4](https://github.com/sincekmori/copycopy/compare/v0.4.3...v0.4.4) - 2026-10-23
 
 ### Other
