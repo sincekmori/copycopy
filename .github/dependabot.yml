@@ -4,6 +4,11 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Transitive dependencies too. By default only the crates named in
+    # Cargo.toml are updated, and the rest of Cargo.lock stays where it is until
+    # a yank or an advisory turns up in it.
+    allow:
+      - dependency-type: all
     # Supply-chain mitigation: only propose versions that have been public for 7 days.
     cooldown:
       default-days: 7
