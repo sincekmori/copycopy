@@ -1,0 +1,35 @@
+name: advisories
+
+# RustSec advisories and yanked crates in Cargo.lock. They appear when the
+# outside world changes, not when this repository does, so they are checked on
+# a schedule and when the dependencies change on main, not on pull requests: a
+# new one is noticed within a day and never fails a pull request that has
+# nothing to do with it.
+on:
+  schedule:
+    # Daily at 20:37 UTC (05:37 JST). Not at the top of the hour, when
+    # scheduled runs are the most likely to be delayed. GitHub disables
+    # scheduled workflows in a public repository after 60 days without
+    # repository activity; re-enable it from the Actions tab if that happens.
+    - cron: "37 20 * * *"
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - deny.toml
+      - .github/workflows/advisories.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
