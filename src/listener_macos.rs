@@ -6,9 +6,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::thread;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use objc2_core_foundation::{CFMachPort, CFRunLoop, kCFRunLoopCommonModes};
@@ -20,6 +18,7 @@ use objc2_core_graphics::{
 use crate::capture::{capture_macos, clipboard_change_count};
 use crate::config::Config;
 use crate::detector::DoubleTap;
+use crate::gate::CaptureGate;
 use crate::{CaptureHandler, Error};
 
 const KEY_C: i64 = 8; // kVK_ANSI_C
@@ -31,7 +30,7 @@ struct TapState {
     handler: CaptureHandler,
     detector: RefCell<DoubleTap>,
     last_trigger: RefCell<Option<Instant>>,
-    in_flight: Arc<AtomicBool>,
+    gate: CaptureGate,
     base: Instant,
     /// The tap's mach port (as a raw pointer value) so the callback can
     /// re-enable the tap if macOS disables it. Valid for the program's life
@@ -48,20 +47,16 @@ fn fire_if_allowed(state: &TapState) {
     if !cooled {
         return;
     }
-    if state.in_flight.swap(true, Ordering::AcqRel) {
+    let Some(in_flight) = state.gate.claim() else {
         return;
-    }
+    };
     *state.last_trigger.borrow_mut() = Some(Instant::now());
 
     // Keep the tap callback fast: snapshot only the cheap change counter here.
     let baseline = clipboard_change_count();
     let config = state.config.clone();
     let handler = state.handler.clone();
-    let flag = state.in_flight.clone();
-    thread::spawn(move || {
-        capture_macos(config, handler, baseline);
-        flag.store(false, Ordering::Release);
-    });
+    in_flight.run(move || capture_macos(config, handler, baseline));
 }
 
 unsafe extern "C-unwind" fn tap_callback(
@@ -123,7 +118,7 @@ pub fn install(config: Config, handler: CaptureHandler) -> Result<(), Error> {
         handler,
         detector: RefCell::new(DoubleTap::new(double_tap_window)),
         last_trigger: RefCell::new(None),
-        in_flight: Arc::new(AtomicBool::new(false)),
+        gate: CaptureGate::default(),
         base: Instant::now(),
         port: OnceLock::new(),
     }));

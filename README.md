@@ -113,6 +113,9 @@ Two common patterns:
 
 - **In Rust** — run your processor directly in the handler and keep API keys native (e.g. an OS keychain); the handler runs on a worker thread, so blocking calls are fine.
 
+A handler that panics loses only that capture.
+The panic hook reports it as usual, and the trigger stays armed for the next double-copy.
+
 ## Trigger status
 
 `start` has a sibling, `start_with_status`, that also reports how the trigger settled — the states a GUI host should surface to the user, because they are otherwise silent (the accompanying diagnostics go to stderr, which is invisible in a bundled app):

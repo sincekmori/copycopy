@@ -112,10 +112,20 @@ fn run(
         if should_skip(&fg, &config.denylist_exec_substrings) {
             continue;
         }
-        let content = convert(&kind, &mime, data, plain, config.max_files);
-        handler(build_event(fg, content));
+        // The handler is called on this thread, so a capture that panics has
+        // to be stopped here for the loop to go on to the next one.
+        contained(|| {
+            let content = convert(&kind, &mime, data, plain, config.max_files);
+            handler(build_event(fg, content));
+        });
     }
     Ok(())
+}
+
+/// Runs one capture and keeps a panic in it from unwinding any further: that
+/// capture is lost, the listener is not.
+fn contained(capture: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(capture));
 }
 
 /// Map an extension payload onto [`Captured`], mirroring the priority and
@@ -198,6 +208,16 @@ fn parse_uri_list(text: &str, gnome_copied_files: bool, max_files: usize) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capture_that_panics_does_not_end_the_listener() {
+        contained(|| {
+            // Unwinds as a panicking handler does, without the panic hook's
+            // report in the test output.
+            std::panic::resume_unwind(Box::new("the handler panicked"));
+        });
+        // Getting here is the assertion: the unwind stopped in `contained`.
+    }
 
     fn png_with(width: u32, height: u32) -> Vec<u8> {
         let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];

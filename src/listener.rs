@@ -9,9 +9,6 @@
 //! Wayland), other Wayland compositors are reported as unsupported, and X11
 //! falls through to the rdev path.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use rdev::{Event, EventType, Key, listen};
@@ -20,6 +17,7 @@ use crate::CaptureHandler;
 use crate::capture::{clipboard_change_count, run_capture};
 use crate::config::Config;
 use crate::detector::DoubleTap;
+use crate::gate::CaptureGate;
 
 #[inline]
 fn is_trigger_modifier(key: Key) -> bool {
@@ -54,7 +52,7 @@ pub fn start_listener(config: Config, handler: CaptureHandler, status: crate::St
 fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::StatusHandler) {
     let mut detector = DoubleTap::new(config.double_tap_window.as_millis() as u64);
     let mut last_trigger: Option<Instant> = None;
-    let in_flight = Arc::new(AtomicBool::new(false));
+    let gate = CaptureGate::default();
     let base = Instant::now();
     let cooldown = config.trigger_cooldown;
 
@@ -69,13 +67,7 @@ fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::S
                     } else if key == Key::KeyC {
                         let now_ms = base.elapsed().as_millis() as u64;
                         if detector.on_c_down(now_ms, false) {
-                            fire_if_allowed(
-                                &config,
-                                &handler,
-                                &in_flight,
-                                &mut last_trigger,
-                                cooldown,
-                            );
+                            fire_if_allowed(&config, &handler, &gate, &mut last_trigger, cooldown);
                         }
                     }
                 }
@@ -106,7 +98,7 @@ fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::S
 fn fire_if_allowed(
     config: &Config,
     handler: &CaptureHandler,
-    in_flight: &Arc<AtomicBool>,
+    gate: &CaptureGate,
     last_trigger: &mut Option<Instant>,
     cooldown: Duration,
 ) {
@@ -116,17 +108,13 @@ fn fire_if_allowed(
     if !cooled {
         return;
     }
-    if in_flight.swap(true, Ordering::AcqRel) {
+    let Some(in_flight) = gate.claim() else {
         return;
-    }
+    };
     *last_trigger = Some(Instant::now());
 
     let baseline = clipboard_change_count();
     let config = config.clone();
     let handler = handler.clone();
-    let flag = in_flight.clone();
-    thread::spawn(move || {
-        run_capture(&config, &handler, baseline);
-        flag.store(false, Ordering::Release);
-    });
+    in_flight.run(move || run_capture(&config, &handler, baseline));
 }

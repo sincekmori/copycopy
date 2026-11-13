@@ -4,6 +4,7 @@ mod capture;
 mod config;
 mod detector;
 mod event;
+mod gate;
 #[cfg(target_os = "linux")]
 mod gnome;
 #[cfg(not(target_os = "macos"))]
@@ -18,6 +19,10 @@ pub use event::{CaptureEvent, Captured, RichFormat};
 
 /// Handler invoked once per trigger, on a worker thread (off the main thread,
 /// including on macOS), so it may perform slow work.
+///
+/// A handler that panics loses that one capture: the panic hook reports it as
+/// usual and the trigger stays armed for the next double-copy. (A host built
+/// with `panic = "abort"` still ends there, like on any other panic.)
 pub type CaptureHandler = Arc<dyn Fn(CaptureEvent) + Send + Sync>;
 
 /// Handler invoked with [`TriggerStatus`] reports (see [`start_with_status`]).
