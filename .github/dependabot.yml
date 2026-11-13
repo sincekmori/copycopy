@@ -1,4 +1,7 @@
 version: 2
+# Release-age policy: each tool's own default, and one day where a tool
+# defines none. Dependabot defines one (3 days when this was written), so
+# there is no `cooldown` here; cargo defines none, see .cargo/config.toml.
 updates:
   - package-ecosystem: cargo
     directory: "/"
@@ -9,9 +12,6 @@ updates:
     # a yank or an advisory turns up in it.
     allow:
       - dependency-type: all
-    # Supply-chain mitigation: only propose versions that have been public for 7 days.
-    cooldown:
-      default-days: 7
     open-pull-requests-limit: 5
     groups:
       cargo:
@@ -21,8 +21,6 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 7
     groups:
       actions:
         patterns: ["*"]
