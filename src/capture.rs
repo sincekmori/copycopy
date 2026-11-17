@@ -1,7 +1,8 @@
 //! On a trigger: read the foreground window, wait for the clipboard to change
 //! (= the fresh copy landed), read it, and hand a [`CaptureEvent`] to the handler.
 //!
-//! - Image is delivered as PNG-encoded bytes.
+//! - Image is delivered as PNG-encoded bytes: the clipboard's own PNG as it
+//!   is where it holds one, else what it holds instead, encoded as one.
 //! - Files are delivered as normalized filesystem paths (read them downstream).
 //! - Audio/Video are not on the clipboard as media — only as file references.
 //! - A copy its source marked as a secret is not delivered at all.
@@ -14,6 +15,7 @@
 //! On macOS the clipboard/window reads must run on the process main thread;
 //! [`run_capture`] hops to the main thread via libdispatch while sleeping off it.
 
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -251,6 +253,12 @@ fn fetched<T>(
     read.ok()
 }
 
+/// The clipboard context every read goes through, made by the first read
+/// and kept. On X11 clipboard-rs opens two connections to the server and
+/// starts a thread for each context, and has nothing that gives them back, so
+/// a context per read would leave those behind with every capture.
+static CONTEXT: Mutex<Option<ClipboardContext>> = Mutex::new(None);
+
 /// One clipboard read.
 ///
 /// Priority: files > text, when text is what was copied (see
@@ -262,7 +270,14 @@ fn read_clipboard(max_files: usize) -> Read {
     if clipboard_held_elsewhere() {
         return Read::Partial(Captured::Empty);
     }
-    let Ok(ctx) = ClipboardContext::new() else {
+    // A read that panicked with the lock held is no reason to refuse every
+    // read after it, and a context that could not be made is not kept: the
+    // next read tries again.
+    let mut context = CONTEXT.lock().unwrap_or_else(PoisonError::into_inner);
+    if context.is_none() {
+        *context = ClipboardContext::new().ok();
+    }
+    let Some(ctx) = context.as_ref() else {
         return Read::Whole(Captured::Empty);
     };
     // The list of formats is where a secret is marked: content that offers
@@ -271,12 +286,12 @@ fn read_clipboard(max_files: usize) -> Read {
     if formats.is_empty() && READ_FORMATS.into_iter().any(|format| ctx.has(format)) {
         return Read::Partial(Captured::Empty);
     }
-    if is_concealed(&ctx, &formats) {
+    if is_concealed(ctx, &formats) {
         return Read::Secret;
     }
 
     let mut unread = false;
-    let content = read_content(&ctx, max_files, &mut unread);
+    let content = read_content(ctx, &formats, max_files, &mut unread);
     if unread {
         Read::Partial(content)
     } else {
@@ -286,7 +301,13 @@ fn read_clipboard(max_files: usize) -> Read {
 
 /// The clipboard's content by the priority of [`read_clipboard`], with a
 /// note in `unread` of an offered format that would not be handed over.
-fn read_content(ctx: &ClipboardContext, max_files: usize, unread: &mut bool) -> Captured {
+/// `formats` is the clipboard's own list of what it offers.
+fn read_content(
+    ctx: &ClipboardContext,
+    formats: &[String],
+    max_files: usize,
+    unread: &mut bool,
+) -> Captured {
     if let Some(files) = fetched(ctx, ContentFormat::Files, ctx.get_files(), unread) {
         let paths: Vec<String> = files
             .into_iter()
@@ -302,16 +323,9 @@ fn read_content(ctx: &ClipboardContext, max_files: usize, unread: &mut bool) -> 
     let html = fetched(ctx, ContentFormat::Html, ctx.get_html(), unread)
         .filter(|html| !html.trim().is_empty());
     if !text_outranks_image(&plain, html.as_deref())
-        && let Some(img) = fetched(ctx, ContentFormat::Image, ctx.get_image(), unread)
-        && !img.is_empty()
+        && let Some(image) = read_image(ctx, formats, unread)
     {
-        let (width, height) = img.get_size();
-        let png = img
-            .to_png()
-            .ok()
-            .map(|b| b.get_bytes().to_vec())
-            .unwrap_or_default();
-        return Captured::Image { width, height, png };
+        return image;
     }
     if let Some(html) = html
         && html_is_meaningfully_rich(&html)
@@ -336,6 +350,103 @@ fn read_content(ctx: &ClipboardContext, max_files: usize, unread: &mut bool) -> 
         return Captured::Text { text: plain };
     }
     Captured::Empty
+}
+
+/// The name a PNG goes by on the clipboard when an app put one there as it
+/// is. It is the first place clipboard-rs looks for an image, to decode it.
+#[cfg(target_os = "macos")]
+const NATIVE_PNG: &str = "public.png";
+#[cfg(windows)]
+const NATIVE_PNG: &str = "PNG";
+#[cfg(not(any(windows, target_os = "macos")))]
+const NATIVE_PNG: &str = "image/png";
+
+/// The clipboard's image as a PNG. A PNG it holds goes out as it is (see
+/// [`untouched_png`]); what it holds instead — a TIFF on macOS, a bitmap on
+/// Windows — is decoded and encoded as one.
+fn read_image(ctx: &ClipboardContext, formats: &[String], unread: &mut bool) -> Option<Captured> {
+    // Asked for only where the clipboard lists one, so that a clipboard
+    // without one is read no more often than it was. The name is compared
+    // the way Windows compares the names apps register: whatever the case.
+    let lists_png = formats
+        .iter()
+        .any(|format| format.eq_ignore_ascii_case(NATIVE_PNG));
+    if lists_png && let Some(image) = ctx.get_buffer(NATIVE_PNG).ok().and_then(untouched_png) {
+        return Some(image);
+    }
+    let img = fetched(ctx, ContentFormat::Image, ctx.get_image(), unread)
+        .filter(|img| !img.is_empty())?;
+    let (width, height) = img.get_size();
+    let png = img
+        .to_png()
+        .ok()
+        .map(|b| b.get_bytes().to_vec())
+        .unwrap_or_default();
+    Some(Captured::Image { width, height, png })
+}
+
+/// A PNG as the image to deliver, its bytes left as the app that copied
+/// wrote them: only the header is read, for the size. Decoding them to
+/// encode them again delivers the same picture at the price of both — paid,
+/// on macOS, on the host's main thread.
+///
+/// `None` leaves the bytes to the decoder: when they are not a PNG from its
+/// signature to its end (see [`png_is_whole`]), or declare a size no picture
+/// has.
+fn untouched_png(png: Vec<u8>) -> Option<Captured> {
+    let (width, height) = png_dimensions(&png)?;
+    (width > 0 && height > 0 && png_is_whole(&png)).then_some(Captured::Image {
+        width,
+        height,
+        png,
+    })
+}
+
+/// The eight bytes every PNG starts with.
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// The width and height a PNG declares, read from its header without
+/// decoding it: the `IHDR` chunk is mandatory and always first. `None` for
+/// anything that does not start the way a PNG does.
+pub(crate) fn png_dimensions(png: &[u8]) -> Option<(u32, u32)> {
+    // After the signature: the chunk's length (4 bytes) and type (4), then
+    // its data, which opens with the width (4) and the height (4).
+    let (header, _) = png
+        .strip_prefix(&PNG_SIGNATURE)?
+        .split_first_chunk::<16>()?;
+    if &header[4..8] != b"IHDR" {
+        return None;
+    }
+    let number = |at: usize| {
+        u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+    };
+    Some((number(8), number(12)))
+}
+
+/// Whether the bytes are a PNG's chunks through to the last one, `IEND`,
+/// with image data on the way — told by walking the chunks' lengths; nothing
+/// is decoded. A PNG cut short, as by a transfer that stopped halfway, is
+/// not.
+fn png_is_whole(png: &[u8]) -> bool {
+    let Some(mut chunks) = png.strip_prefix(&PNG_SIGNATURE) else {
+        return false;
+    };
+    let mut has_data = false;
+    // A chunk: the length of its data (4 bytes), its type (4), the data, and
+    // a checksum (4).
+    while let Some((head, rest)) = chunks.split_first_chunk::<8>() {
+        let length = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        let Some(next) = length.checked_add(4).and_then(|end| rest.get(end..)) else {
+            return false;
+        };
+        match &head[4..] {
+            b"IEND" => return has_data,
+            b"IDAT" => has_data = true,
+            _ => {}
+        }
+        chunks = next;
+    }
+    false
 }
 
 /// Whether the clipboard's formats carry a marker that its content is a secret.
@@ -817,6 +928,142 @@ mod tests {
         assert!(!rtf_is_meaningfully_rich(
             r"{\rtf1\ansi \f0\fs24 \cf0 plain}"
         ));
+    }
+
+    /// A PNG of two pixels by three, as an encoder wrote it.
+    const TINY_PNG: [u8; 81] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x08, 0x06, 0x00, 0x00, 0x00, 0xb9,
+        0xea, 0xde, 0x81, 0x00, 0x00, 0x00, 0x18, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x0c, 0x81, 0x34, 0x10, 0x30, 0x34, 0x80, 0x68, 0x07, 0x90, 0x00,
+        0x00, 0xa7, 0xb9, 0x0c, 0xb5, 0xba, 0x25, 0x04, 0xdd, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// The bytes of a PNG as far as its chunks go: the signature, then each
+    /// chunk with its length before its data and a checksum after it.
+    fn png_of(chunks: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut png = PNG_SIGNATURE.to_vec();
+        for (kind, data) in chunks {
+            png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            png.extend_from_slice(*kind);
+            png.extend_from_slice(data);
+            png.extend_from_slice(&[0; 4]); // the checksum, which nothing here reads
+        }
+        png
+    }
+
+    /// The data of an `IHDR` chunk for a picture of this size.
+    fn ihdr(width: u32, height: u32) -> Vec<u8> {
+        let mut data = [width.to_be_bytes(), height.to_be_bytes()].concat();
+        data.extend_from_slice(&[8, 6, 0, 0, 0]); // eight bits a channel, RGBA
+        data
+    }
+
+    #[test]
+    fn png_dimensions_from_the_header() {
+        assert_eq!(png_dimensions(&TINY_PNG), Some((2, 3)));
+        let header = png_of(&[(b"IHDR", &ihdr(640, 480))]);
+        assert_eq!(png_dimensions(&header), Some((640, 480)));
+        // Cut one byte before the height ends.
+        assert_eq!(png_dimensions(&header[..23]), None);
+        // The first chunk is not the header.
+        assert_eq!(png_dimensions(&png_of(&[(b"IDAT", &ihdr(640, 480))])), None);
+        assert_eq!(png_dimensions(b"not a png at all, definitely"), None);
+        assert_eq!(png_dimensions(&[]), None);
+    }
+
+    #[test]
+    fn a_png_goes_out_untouched() {
+        // The size it was delivered with, having gone out byte for byte.
+        let untouched = |png: &[u8]| match untouched_png(png.to_vec()) {
+            Some(Captured::Image {
+                width,
+                height,
+                png: bytes,
+            }) => {
+                assert_eq!(bytes, png);
+                Some((width, height))
+            }
+            None => None,
+            other => panic!("expected an image, got {other:?}"),
+        };
+        assert_eq!(untouched(&TINY_PNG), Some((2, 3)));
+
+        // With what else a PNG may carry: chunks the picture can do without,
+        // its data in more than one chunk, bytes after its end.
+        let mut png = png_of(&[
+            (b"IHDR", &ihdr(640, 480)),
+            (b"iCCP", b"a color profile"),
+            (b"tEXt", b"Software\0an app"),
+            (b"IDAT", b"some of the picture"),
+            (b"IDAT", b"the rest of it"),
+            (b"IEND", b""),
+        ]);
+        assert_eq!(untouched(&png), Some((640, 480)));
+        png.extend_from_slice(b"trailing");
+        assert_eq!(untouched(&png), Some((640, 480)));
+    }
+
+    #[test]
+    fn what_is_not_a_whole_png_is_left_to_the_decoder() {
+        // Cut short anywhere: a transfer that stopped halfway.
+        for end in 0..TINY_PNG.len() {
+            assert!(
+                untouched_png(TINY_PNG[..end].to_vec()).is_none(),
+                "cut at {end}"
+            );
+        }
+
+        let refused = |chunks: &[(&[u8; 4], &[u8])]| untouched_png(png_of(chunks)).is_none();
+        // No picture in it.
+        assert!(refused(&[(b"IHDR", &ihdr(2, 3)), (b"IEND", b"")]));
+        // A size no picture has.
+        assert!(refused(&[
+            (b"IHDR", &ihdr(0, 3)),
+            (b"IDAT", b"x"),
+            (b"IEND", b"")
+        ]));
+        assert!(refused(&[
+            (b"IHDR", &ihdr(2, 0)),
+            (b"IDAT", b"x"),
+            (b"IEND", b"")
+        ]));
+        // Another kind of image under the PNG's name.
+        let jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF, and so on for a while".to_vec();
+        assert!(untouched_png(jpeg).is_none());
+
+        // A chunk that claims more than is there — all a length can claim.
+        let mut png = png_of(&[(b"IHDR", &ihdr(2, 3)), (b"IDAT", b"x"), (b"IEND", b"")]);
+        assert!(untouched_png(png.clone()).is_some());
+        let idat = 8 + 8 + 13 + 4; // past the signature and the whole of IHDR
+        png[idat..idat + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(untouched_png(png).is_none());
+    }
+
+    #[test]
+    fn the_decoder_and_the_untouched_path_agree() {
+        // The PNG the tests go by is one a decoder takes, and what the
+        // decoder's path encodes is in turn one the untouched path takes.
+        let decoded = clipboard_rs::RustImageData::from_bytes(&TINY_PNG).expect("a valid PNG");
+        assert_eq!(decoded.get_size(), (2, 3));
+        let encoded = decoded.to_png().expect("encodes").get_bytes().to_vec();
+        assert!(matches!(
+            untouched_png(encoded),
+            Some(Captured::Image {
+                width: 2,
+                height: 3,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_native_png_is_the_pasteboards_png_type() {
+        // The type clipboard-rs reads its image from first.
+        let png = unsafe { objc2_app_kit::NSPasteboardTypePNG };
+        assert_eq!(png.to_string(), NATIVE_PNG);
     }
 
     #[test]

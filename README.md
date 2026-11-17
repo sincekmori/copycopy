@@ -88,6 +88,9 @@ One copy puts several representations on the clipboard, and the crate delivers t
 When text and an image arrive together, the text wins if it is real text and the image wins if the text only names it.
 Cells copied in a spreadsheet come with a picture of themselves, and it is the cells you get; a browser's "Copy image" comes with the image's address or an `<img>` tag, and it is the image you get.
 
+An image arrives as a PNG.
+Where the source app put a PNG on the clipboard you get its bytes untouched — the color type, the bit depth and any metadata are the app's — and otherwise one encoded from what it put there instead (a TIFF on macOS, a bitmap on Windows).
+
 On Windows and Linux, a clipboard that has nothing yet, or that offers what it will not hand over yet, is read again for up to two seconds instead of being taken for empty.
 A spreadsheet's cells are the usual case: Excel empties the clipboard at the second Ctrl+C and fills it again some fifty milliseconds later, and soon after another listener — the system's clipboard history, a remote desktop — holds it open to fetch what it wants.
 

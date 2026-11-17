@@ -26,6 +26,24 @@ fn is_trigger_modifier(key: Key) -> bool {
 
 /// Blocking. Run this on a dedicated thread. Picks the backend for the session.
 pub fn start_listener(config: Config, handler: CaptureHandler, status: crate::StatusHandler) {
+    reporting_a_panic(&status, || run_backend(config, handler, status.clone()));
+}
+
+/// Runs a listener and reports the panic that ends it, if one does: the
+/// trigger is gone with the listener's thread, and nothing else would tell the
+/// host.
+fn reporting_a_panic(status: &crate::StatusHandler, listener: impl FnOnce()) {
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(listener)) {
+        let what = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("no message");
+        report_failed(status, format!("the listener panicked: {what}"));
+    }
+}
+
+fn run_backend(config: Config, handler: CaptureHandler, status: crate::StatusHandler) {
     #[cfg(target_os = "linux")]
     {
         use crate::gnome::installer::{Session, detect_session};
@@ -95,4 +113,45 @@ fn start_rdev_listener(config: Config, handler: CaptureHandler, status: crate::S
 pub(crate) fn report_failed(status: &crate::StatusHandler, message: String) {
     eprintln!("[copycopy] {message}");
     status(crate::TriggerStatus::Failed { message });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::TriggerStatus;
+
+    /// A status handler, and the reports it has been given.
+    fn recording() -> (crate::StatusHandler, Arc<Mutex<Vec<TriggerStatus>>>) {
+        let seen: Arc<Mutex<Vec<TriggerStatus>>> = Arc::default();
+        let sink = Arc::clone(&seen);
+        let status: crate::StatusHandler = Arc::new(move |report: TriggerStatus| {
+            sink.lock().unwrap().push(report);
+        });
+        (status, seen)
+    }
+
+    #[test]
+    fn a_listener_that_panics_is_reported() {
+        let (status, seen) = recording();
+        reporting_a_panic(&status, || {
+            // Unwinds as a panic does, without the panic hook's report in the
+            // test output.
+            std::panic::resume_unwind(Box::new("boom"));
+        });
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [TriggerStatus::Failed {
+                message: "the listener panicked: boom".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_listener_that_returns_is_not_reported() {
+        let (status, seen) = recording();
+        reporting_a_panic(&status, || {});
+        assert!(seen.lock().unwrap().is_empty());
+    }
 }

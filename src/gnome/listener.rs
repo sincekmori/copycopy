@@ -6,7 +6,9 @@
 //! broadcast any process could observe. Runs blocking on the listener thread.
 
 use crate::CaptureHandler;
-use crate::capture::{Foreground, build_event, html_is_meaningfully_rich, should_skip};
+use crate::capture::{
+    Foreground, build_event, html_is_meaningfully_rich, png_dimensions, should_skip,
+};
 use crate::config::Config;
 use crate::event::{Captured, RichFormat};
 use crate::gnome::installer::{self, InstallState};
@@ -157,7 +159,9 @@ fn convert(kind: &str, mime: &str, data: Vec<u8>, plain: String, max_files: usiz
             if data.is_empty() {
                 Captured::Empty
             } else {
-                let (width, height) = png_dimensions(&data);
+                // The extension hands over the PNG it read; nothing here
+                // decodes it, so one whose header cannot be read has no size.
+                let (width, height) = png_dimensions(&data).unwrap_or_default();
                 Captured::Image {
                     width,
                     height,
@@ -175,19 +179,6 @@ fn convert(kind: &str, mime: &str, data: Vec<u8>, plain: String, max_files: usiz
             }
         }
         _ => Captured::Empty,
-    }
-}
-
-/// Width/height from a PNG IHDR header (the IHDR chunk is mandatory and
-/// always first). Returns (0, 0) for anything that is not a PNG.
-fn png_dimensions(png: &[u8]) -> (u32, u32) {
-    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-    if png.len() >= 24 && png[..8] == SIGNATURE && &png[12..16] == b"IHDR" {
-        let width = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
-        let height = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
-        (width, height)
-    } else {
-        (0, 0)
     }
 }
 
@@ -262,13 +253,6 @@ mod tests {
         png.extend_from_slice(&width.to_be_bytes());
         png.extend_from_slice(&height.to_be_bytes());
         png
-    }
-
-    #[test]
-    fn png_dimensions_from_ihdr() {
-        assert_eq!(png_dimensions(&png_with(640, 480)), (640, 480));
-        assert_eq!(png_dimensions(b"not a png at all, definitely"), (0, 0));
-        assert_eq!(png_dimensions(&[]), (0, 0));
     }
 
     #[test]
@@ -367,6 +351,22 @@ mod tests {
             }
             other => panic!("expected Image, got {other:?}"),
         }
+        // An image whose header cannot be read is still delivered, without a
+        // size.
+        assert!(matches!(
+            convert(
+                "image",
+                "image/png",
+                b"not a png at all, definitely".to_vec(),
+                String::new(),
+                50
+            ),
+            Captured::Image {
+                width: 0,
+                height: 0,
+                ..
+            }
+        ));
     }
 
     #[test]

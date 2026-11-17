@@ -20,7 +20,9 @@ pub enum RichFormat {
 ///
 /// Serialized with an internal `"kind"` tag, e.g. `{ "kind": "text", "text": "..." }`.
 ///
-/// - [`Captured::Image`] carries PNG-encoded bytes.
+/// - [`Captured::Image`] carries PNG-encoded bytes: the PNG the source app put
+///   on the clipboard, as it is, or one encoded here from what the app put
+///   there instead (a TIFF, a bitmap).
 /// - [`Captured::Files`] carries normalized filesystem paths — read them in your
 ///   own code. Audio and video are not on the clipboard as media; they arrive here
 ///   as file references.
@@ -38,7 +40,9 @@ pub enum Captured {
         width: u32,
         /// Image height in pixels.
         height: u32,
-        /// PNG-encoded image bytes.
+        /// PNG-encoded image bytes. Where the clipboard held a PNG these are
+        /// its bytes, untouched: the color type, the bit depth and any
+        /// metadata are the source app's.
         png: Vec<u8>,
     },
     /// Formatted text carrying meaningful styling.
